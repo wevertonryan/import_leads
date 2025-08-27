@@ -19,7 +19,7 @@ namespace download
             Directory.CreateDirectory(arquivePath);
 
             // URL do arquivo ZIP
-            string url = $"https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-07/{arquive}.zip";
+            string url = $"https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-07/{arquive}";
 
             int attempt = 0;
 
