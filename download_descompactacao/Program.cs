@@ -5,7 +5,19 @@ using System.Net.Http;
 
 internal class Program
 {
-
+    private static string PasteIdentifier(string arquive)
+    {
+        string paste = "";
+        foreach (char letter in arquive)
+        {
+            if (letter == '.' || ('0' <= letter && letter <= '9'))
+            {
+                break;
+            }
+            paste += letter;
+        }
+        return paste;
+    }
     private static async Task Main(string[] args)
     {
         string url = $"https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/{DateTime.Now.ToString("yyyy-MM")}/";
@@ -20,10 +32,10 @@ internal class Program
                 html = await client.GetStringAsync(url);
                 break;
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
                 attempt++;
-                Console.WriteLine($"Tentativa {attempt} falhou: {e}");
+                Console.WriteLine($"Tentativa {attempt} falhou: {ex.Message}");
                 if (attempt >= 3)
                 {
                     Console.WriteLine("Numero de Tentativas excedidas!");
@@ -35,9 +47,11 @@ internal class Program
         // Regex simples para capturar links que terminam em .zip
         var matches = Regex.Matches(html, @"href=""([^""]+\.zip)""");
 
+        Console.WriteLine("|=====|  INICIANDO DOWNLOAD DOS DADOS |=====| ");
         foreach (Match match in matches)
         {
-            await ReceitaImporter.DownloadAndExtractAsync(match.Groups[1].Value);
+            //Console.WriteLine(match.Groups[1].Value);
+            await ReceitaImporter.DownloadAndExtractAsync(match.Groups[1].Value, url);
         }
     }
 }
