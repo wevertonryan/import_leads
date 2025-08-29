@@ -1,11 +1,13 @@
-﻿using System;
+﻿using ICSharpCode.SharpZipLib.Core;
+using ICSharpCode.SharpZipLib.Zip;
+using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using ICSharpCode.SharpZipLib.Zip;
-using ICSharpCode.SharpZipLib.Core;
 
 
 namespace download
@@ -70,8 +72,6 @@ namespace download
                         // Copia os dados do arquivo em streaming
                         StreamUtils.Copy(zipInput, fileStream, buffer);
                     }
-
-
                     //using var zip = new ZipArchive(stream);
                     //zip.ExtractToDirectory(arquivePath, overwriteFiles: true); // sobrescreve arquivos existentes
 
@@ -86,6 +86,42 @@ namespace download
                         throw; // ultrapassou número máximo de tentativas, repassa exceção
                     await Task.Delay(2000); // espera 2 segundos antes de tentar novamente
                 }
+            }
+        }
+        public static async Task Agendamento()
+        {
+            string url = $"https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/{DateTime.Now.ToString("yyyy-MM")}/";
+            string html = "";
+
+            int attempt = 0;
+            while (attempt <= 3)
+            {
+                try
+                {
+                    using var client = new HttpClient();
+                    html = await client.GetStringAsync(url);
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    attempt++;
+                    Console.WriteLine($"Tentativa {attempt} falhou: {ex.Message}");
+                    if (attempt >= 3)
+                    {
+                        Console.WriteLine("Numero de Tentativas excedidas!");
+                        return;
+                    }
+                }
+            }
+
+            // Regex simples para capturar links que terminam em .zip
+            var matches = Regex.Matches(html, @"href=""([^""]+\.zip)""");
+
+            Console.WriteLine("|=====|  INICIANDO DOWNLOAD DOS DADOS |=====| ");
+            foreach (Match match in matches)
+            {
+                //Console.WriteLine(match.Groups[1].Value);
+                await ReceitaImporter.DownloadAndExtractAsync(match.Groups[1].Value, url);
             }
         }
     }
