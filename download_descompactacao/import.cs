@@ -4,6 +4,9 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
+using ICSharpCode.SharpZipLib.Zip;
+using ICSharpCode.SharpZipLib.Core;
+
 
 namespace download
 {
@@ -47,9 +50,30 @@ namespace download
                     using var response = await client.GetAsync(urlArquive, HttpCompletionOption.ResponseHeadersRead);
                     response.EnsureSuccessStatusCode(); // lança exceção se não for 200
 
-                    using var stream = await response.Content.ReadAsStreamAsync();
-                    using var zip = new ZipArchive(stream);
-                    zip.ExtractToDirectory(arquivePath, overwriteFiles: true); // sobrescreve arquivos existentes
+                    using var zipStream = await response.Content.ReadAsStreamAsync();
+                    using var zipInput = new ZipInputStream(zipStream);
+
+                    ZipEntry entry;
+                    byte[] buffer = new byte[81920]; // 80 KB por vez
+
+                    // Itera pelos arquivos dentro do ZIP
+                    while ((entry = zipInput.GetNextEntry()) != null)
+                    {
+                        if (!entry.IsFile)
+                            continue; // pula diretórios
+
+                        string entryPath = Path.Combine(arquivePath, entry.Name);
+                        Directory.CreateDirectory(Path.GetDirectoryName(entryPath)!);
+
+                        using var fileStream = File.Create(entryPath);
+
+                        // Copia os dados do arquivo em streaming
+                        StreamUtils.Copy(zipInput, fileStream, buffer);
+                    }
+
+
+                    //using var zip = new ZipArchive(stream);
+                    //zip.ExtractToDirectory(arquivePath, overwriteFiles: true); // sobrescreve arquivos existentes
 
                     Console.WriteLine(" - Download e extração concluídos com sucesso!\n");
                     return; // terminou sem erro, sai do método
