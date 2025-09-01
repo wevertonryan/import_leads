@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,14 +19,9 @@ namespace download
 
         private static string PasteIdentifier(string arquive)
         {
-            string paste = "";
-            foreach (char letter in arquive)
-            {
-                if (letter == '.' || ('0' <= letter && letter <= '9'))
-                    break;
-                paste += letter;
-            }
-            return paste;
+            return new string(arquive
+                .TakeWhile(c => c != '.' && !char.IsDigit(c))
+                .ToArray());
         }
 
         public static async Task DownloadAndExtractAsync(string arquive, string url, int maxRetries = 3)
@@ -49,7 +45,12 @@ namespace download
                     using var zipInput = new ZipInputStream(zipStream);
 
                     ZipEntry entry;
-                    byte[] byteBuffer = new byte[81920];
+                    byte[] inputBuffer = new byte[81920];           // Buffer de leitura do ZIP
+                    char[] charBuffer = new char[81920];            // Buffer de chars ISO-8859-1
+                    byte[] outputBuffer = new byte[81920 * 2];      // Buffer para UTF-8 (maior por segurança)
+
+                    var isoEncoding = Encoding.GetEncoding("ISO-8859-1");
+                    var utf8Encoding = new UTF8Encoding(false);
 
                     while ((entry = zipInput.GetNextEntry()) != null)
                     {
@@ -61,13 +62,16 @@ namespace download
                         using var fileStream = File.Create(entryPath);
 
                         int bytesRead;
-                        while ((bytesRead = zipInput.Read(byteBuffer, 0, byteBuffer.Length)) > 0)
+                        while ((bytesRead = zipInput.Read(inputBuffer, 0, inputBuffer.Length)) > 0)
                         {
-                            // Converte os bytes lidos do ISO-8859-1 para UTF-8
-                            var utf8Bytes = System.Text.Encoding.UTF8.GetBytes(
-                                System.Text.Encoding.GetEncoding("ISO-8859-1").GetString(byteBuffer, 0, bytesRead)
-                            );
-                            fileStream.Write(utf8Bytes, 0, utf8Bytes.Length);
+                            // Converte diretamente os bytes ISO-8859-1 para chars
+                            int charsRead = isoEncoding.GetChars(inputBuffer, 0, bytesRead, charBuffer, 0);
+
+                            // Converte chars para UTF-8 bytes no buffer de saída
+                            int utf8BytesCount = utf8Encoding.GetBytes(charBuffer, 0, charsRead, outputBuffer, 0);
+
+                            // Escreve no arquivo final
+                            fileStream.Write(outputBuffer, 0, utf8BytesCount);
                         }
                     }
 
@@ -83,6 +87,7 @@ namespace download
                 }
             }
         }
+
 
         public static async Task Agendamento()
         {
