@@ -1,104 +1,100 @@
 ﻿using ICSharpCode.SharpZipLib.Core;
 using ICSharpCode.SharpZipLib.Zip;
 using System;
-using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
-
 
 namespace download
 {
     public static class ReceitaImporter
     {
+        private static readonly HttpClient client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        private static readonly SemaphoreSlim semaphore = new SemaphoreSlim(3); // Limite de 3 downloads simultâneos
+
         private static string PasteIdentifier(string arquive)
         {
             string paste = "";
             foreach (char letter in arquive)
             {
                 if (letter == '.' || ('0' <= letter && letter <= '9'))
-                {
                     break;
-                }
                 paste += letter;
             }
             return paste;
         }
+
         public static async Task DownloadAndExtractAsync(string arquive, string url, int maxRetries = 3)
         {
-            // Força TLS 1.2
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
 
-            // Caminho da pasta de destino
             string arquivePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DadosReceita", PasteIdentifier(arquive));
             Directory.CreateDirectory(arquivePath);
 
-            // URL do arquivo ZIP
             string urlArquive = url + arquive;
-
-            Console.WriteLine($"Baixando e Descompactando: {arquive}");
 
             int attempt = 0;
             while (attempt < maxRetries)
             {
                 try
                 {
-                    using var client = new HttpClient();
-                    client.Timeout = TimeSpan.FromMinutes(5); // Timeout maior para arquivos grandes
-
                     using var response = await client.GetAsync(urlArquive, HttpCompletionOption.ResponseHeadersRead);
-                    response.EnsureSuccessStatusCode(); // lança exceção se não for 200
+                    response.EnsureSuccessStatusCode();
 
                     using var zipStream = await response.Content.ReadAsStreamAsync();
                     using var zipInput = new ZipInputStream(zipStream);
 
                     ZipEntry entry;
-                    byte[] buffer = new byte[81920]; // 80 KB por vez
+                    byte[] byteBuffer = new byte[81920];
 
-                    // Itera pelos arquivos dentro do ZIP
                     while ((entry = zipInput.GetNextEntry()) != null)
                     {
-                        if (!entry.IsFile)
-                            continue; // pula diretórios
+                        if (!entry.IsFile) continue;
 
                         string entryPath = Path.Combine(arquivePath, entry.Name);
                         Directory.CreateDirectory(Path.GetDirectoryName(entryPath)!);
 
                         using var fileStream = File.Create(entryPath);
 
-                        // Copia os dados do arquivo em streaming
-                        StreamUtils.Copy(zipInput, fileStream, buffer);
+                        int bytesRead;
+                        while ((bytesRead = zipInput.Read(byteBuffer, 0, byteBuffer.Length)) > 0)
+                        {
+                            // Converte os bytes lidos do ISO-8859-1 para UTF-8
+                            var utf8Bytes = System.Text.Encoding.UTF8.GetBytes(
+                                System.Text.Encoding.GetEncoding("ISO-8859-1").GetString(byteBuffer, 0, bytesRead)
+                            );
+                            fileStream.Write(utf8Bytes, 0, utf8Bytes.Length);
+                        }
                     }
-                    //using var zip = new ZipArchive(stream);
-                    //zip.ExtractToDirectory(arquivePath, overwriteFiles: true); // sobrescreve arquivos existentes
 
-                    Console.WriteLine(" - Download e extração concluídos com sucesso!\n");
-                    return; // terminou sem erro, sai do método
+                    Console.WriteLine($" - {arquive} concluído com sucesso!");
+                    return;
                 }
                 catch (Exception ex)
                 {
                     attempt++;
-                    Console.WriteLine($" - Tentativa {attempt} falhou: {ex.Message}");
-                    if (attempt >= maxRetries)
-                        throw; // ultrapassou número máximo de tentativas, repassa exceção
-                    await Task.Delay(2000); // espera 2 segundos antes de tentar novamente
+                    Console.WriteLine($" - Tentativa {attempt} de {arquive} falhou: {ex.Message}");
+                    if (attempt >= maxRetries) throw;
+                    await Task.Delay(2000);
                 }
             }
         }
+
         public static async Task Agendamento()
         {
-            string url = $"https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/{DateTime.Now.ToString("yyyy-MM")}/";
-            string html = "";
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+            string url = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-08/";
 
+            string html = "";
             int attempt = 0;
-            while (attempt <= 3)
+            while (attempt < 3)
             {
                 try
                 {
-                    using var client = new HttpClient();
                     html = await client.GetStringAsync(url);
                     break;
                 }
@@ -108,21 +104,37 @@ namespace download
                     Console.WriteLine($"Tentativa {attempt} falhou: {ex.Message}");
                     if (attempt >= 3)
                     {
-                        Console.WriteLine("Numero de Tentativas excedidas!");
+                        Console.WriteLine("Número de tentativas excedidas!");
                         return;
                     }
                 }
             }
 
-            // Regex simples para capturar links que terminam em .zip
             var matches = Regex.Matches(html, @"href=""([^""]+\.zip)""");
+            var tasks = new List<Task>();
 
-            Console.WriteLine("|=====|  INICIANDO DOWNLOAD DOS DADOS |=====| ");
+            Console.WriteLine("|=====|  INICIANDO DOWNLOAD DOS DADOS |=====|");
+
             foreach (Match match in matches)
             {
-                //Console.WriteLine(match.Groups[1].Value);
-                await ReceitaImporter.DownloadAndExtractAsync(match.Groups[1].Value, url);
+                string arquiveName = match.Groups[1].Value;
+                await semaphore.WaitAsync(); // espera até ter permissão para iniciar download
+
+                tasks.Add(Task.Run(async () =>
+                {
+                    try
+                    {
+                        await DownloadAndExtractAsync(arquiveName, url);
+                    }
+                    finally
+                    {
+                        semaphore.Release(); // libera para outro download
+                    }
+                }));
             }
+
+            await Task.WhenAll(tasks); // aguarda todos os downloads terminarem
+            Console.WriteLine("Todos os downloads foram concluídos!");
         }
     }
 }
