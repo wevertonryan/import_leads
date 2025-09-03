@@ -57,7 +57,7 @@ namespace download
                         if (!entry.IsFile) continue;
 
                         string entryPath = Path.Combine(arquivePath, entry.Name);
-                        Directory.CreateDirectory(Path.GetDirectoryName(entryPath)!);
+                        //Directory.CreateDirectory(Path.GetDirectoryName(entryPath)!);
 
                         using var fileStream = File.Create(entryPath);
 
@@ -71,7 +71,7 @@ namespace download
                             int utf8BytesCount = utf8Encoding.GetBytes(charBuffer, 0, charsRead, outputBuffer, 0);
 
                             // Escreve no arquivo final
-                            fileStream.Write(outputBuffer, 0, utf8BytesCount);
+                            await fileStream.WriteAsync(outputBuffer, 0, utf8BytesCount);
                         }
                     }
 
