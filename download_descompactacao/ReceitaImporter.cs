@@ -2,6 +2,7 @@
 using ICSharpCode.SharpZipLib.Zip;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -18,16 +19,16 @@ namespace download
         private static readonly SemaphoreSlim semaphore = new SemaphoreSlim(3); // Limite de 3 downloads simultâneos
         private static readonly Dictionary<string, string> header = new Dictionary<string, string>
         {
-            {"Cnaes", "'codigo','descricao'\n" },
-            {"Empresas", "'cnpjBase','razaoSocial','naturezaJuridica','qualificacaoResponsavel','capitalSocial','porteEmpresa','enteFederativo'\n" },
-            {"Estabelecimentos", "'cnpjBase','cnpjOrdem','cnpjDV','matrizFilial','nomeFantasia','situacaoCadastral','dataSituacaoCadastral','motivoSituacaoCadastral','cidadeExterior','pais','dataInicioAtividade','cnaePrincipal','cnaeSecundario','tipoLogradouro','logradouro','numero','complemento','bairro','CEP','UF','municipio','ddd1','telefone1','ddd2','telefone2','dddFAX','FAX','correioEletronico','situacaoEspecial','dataSituacaoEspecial'\n" },
-            {"Motivos", "'codigo','descricao'\n" },
-            {"Municipios", "'codigo','descricao'\n" },
-            {"Naturezas", "'codigo','descricao'\n" },
-            {"Paises", "'codigo','descricao'\n" },
-            {"Qualificacoes", "'codigo','descricao'\n" },
-            {"Simples", "'cnpjBase','opcaoDoSimples','dataOpcaoDoSimples','dataExclusaoDoSimples','MEI','dataOpcaoMEI','dataExclusaoMei'\n" },
-            {"Socios", "'cnpjBase','identificadoSocio','nomeSocio','cnpjCpf','qualificaoSocio','dataEntradaSociedade','pais','representanteLegal','nomeRepresentante','qualificacaoResponsavel','faixaEtaria'\n" }
+            {"Cnaes", "\"codigo\",\"descricao\"\n" },
+            {"Empresas", "\"cnpjBase\",\"razaoSocial\",\"naturezaJuridica\",\"qualificacaoResponsavel\",\"capitalSocial\",\"porteEmpresa\",\"enteFederativo\"\n" },
+            {"Estabelecimentos", "\"cnpjBase\",\"cnpjOrdem\",\"cnpjDV\",\"matrizFilial\",\"nomeFantasia\",\"situacaoCadastral\",\"dataSituacaoCadastral\",\"motivoSituacaoCadastral\",\"cidadeExterior\",\"pais\",\"dataInicioAtividade\",\"cnaePrincipal\",\"cnaeSecundario\",\"tipoLogradouro\",\"logradouro\",\"numero\",\"complemento\",\"bairro\",\"CEP\",\"UF\",\"municipio\",\"ddd1\",\"telefone1\",\"ddd2\",\"telefone2\",\"dddFAX\",\"FAX\",\"correioEletronico\",\"situacaoEspecial\",\"dataSituacaoEspecial\"\n" },
+            {"Motivos", "\"codigo\",\"descricao\"\n" },
+            {"Municipios", "\"codigo\",\"descricao\"\n" },
+            {"Naturezas", "\"codigo\",\"descricao\"\n" },
+            {"Paises", "\"codigo\",\"descricao\"\n" },
+            {"Qualificacoes", "\"codigo\",\"descricao\"\n" },
+            {"Simples", "\"cnpjBase\",\"opcaoDoSimples\",\"dataOpcaoDoSimples\",\"dataExclusaoDoSimples\",\"MEI\",\"dataOpcaoMEI\",\"dataExclusaoMei\"\n" },
+            {"Socios", "\"cnpjBase\",\"identificadoSocio\",\"nomeSocio\",\"cnpjCpf\",\"qualificaoSocio\",\"dataEntradaSociedade\",\"pais\",\"representanteLegal\",\"nomeRepresentante\",\"qualificacaoResponsavel\",\"faixaEtaria\"\n" }
         };
 
         private static string PasteIdentifier(string arquive)
@@ -107,14 +108,9 @@ namespace download
                     int charsRead = isoEncoding.GetChars(inputBuffer, 0, bytesRead, charBuffer, 0);
                     for (int i = 0; i < charsRead; i++)
                     {
-                        switch (charBuffer[i])
+                        if (charBuffer[i] == ';')
                         {
-                            case ';':
-                                charBuffer[i] = ',';
-                                break;
-                            case ',':
-                                charBuffer[i] = '.';
-                                break;
+                            charBuffer[i] = ',';
                         }
                     }
                     int utf8BytesCount = utf8Encoding.GetBytes(charBuffer, 0, charsRead, outputBuffer, 0);
@@ -123,7 +119,7 @@ namespace download
             }
         }
 
-        public static async Task Agendamento()
+        public static async Task Start()
         {
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             string url = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-08/";
@@ -154,6 +150,8 @@ namespace download
 
             Console.WriteLine("|=====|  INICIANDO DOWNLOAD DOS DADOS |=====|");
 
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
             foreach (Match match in matches)
             {
                 string arquiveName = match.Groups[1].Value;
@@ -173,7 +171,9 @@ namespace download
             }
 
             await Task.WhenAll(tasks); // aguarda todos os downloads terminarem
+            stopwatch.Stop();
             Console.WriteLine("Todos os downloads foram concluídos!");
+            Console.WriteLine($"Tempo total de Download: {stopwatch.Elapsed.TotalSeconds:F2} segundos");
         }
     }
 }
