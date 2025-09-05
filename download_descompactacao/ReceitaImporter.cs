@@ -16,6 +16,19 @@ namespace download
     {
         private static readonly HttpClient client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         private static readonly SemaphoreSlim semaphore = new SemaphoreSlim(3); // Limite de 3 downloads simultâneos
+        private static readonly Dictionary<string, string> header = new Dictionary<string, string>
+        {
+            {"Cnaes", "'codigo','descricao'\n" },
+            {"Empresas", "'cnpjBase','razaoSocial','naturezaJuridica','qualificacaoResponsavel','capitalSocial','porteEmpresa','enteFederativo'\n" },
+            {"Estabelecimentos", "'cnpjBase','cnpjOrdem','cnpjDV','matrizFilial','nomeFantasia','situacaoCadastral','dataSituacaoCadastral','motivoSituacaoCadastral','cidadeExterior','pais','dataInicioAtividade','cnaePrincipal','cnaeSecundario','tipoLogradouro','logradouro','numero','complemento','bairro','CEP','UF','municipio','ddd1','telefone1','ddd2','telefone2','dddFAX','FAX','correioEletronico','situacaoEspecial','dataSituacaoEspecial'\n" },
+            {"Motivos", "'codigo','descricao'\n" },
+            {"Municipios", "'codigo','descricao'\n" },
+            {"Naturezas", "'codigo','descricao'\n" },
+            {"Paises", "'codigo','descricao'\n" },
+            {"Qualificacoes", "'codigo','descricao'\n" },
+            {"Simples", "'cnpjBase','opcaoDoSimples','dataOpcaoDoSimples','dataExclusaoDoSimples','MEI','dataOpcaoMEI','dataExclusaoMei'\n" },
+            {"Socios", "'cnpjBase','identificadoSocio','nomeSocio','cnpjCpf','qualificaoSocio','dataEntradaSociedade','pais','representanteLegal','nomeRepresentante','qualificacaoResponsavel','faixaEtaria'\n" }
+        };
 
         private static string PasteIdentifier(string arquive)
         {
@@ -27,54 +40,26 @@ namespace download
         public static async Task DownloadAndExtractAsync(string arquive, string url, int maxRetries = 3)
         {
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-
-            string arquivePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DadosReceita", PasteIdentifier(arquive));
+            string directoryName = PasteIdentifier(arquive);
+            string arquivePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DadosReceita", directoryName);
             Directory.CreateDirectory(arquivePath);
 
             string urlArquive = url + arquive;
-
             int attempt = 0;
+
+            var isoEncoding = Encoding.GetEncoding("ISO-8859-1");
+            var utf8Encoding = new UTF8Encoding(false);
+
+            // Buffers compartilhados para a extração
+            byte[] inputBuffer = new byte[81920];
+            char[] charBuffer = new char[81920];
+            byte[] outputBuffer = new byte[81920 * 2];
+
             while (attempt < maxRetries)
             {
                 try
                 {
-                    using var response = await client.GetAsync(urlArquive, HttpCompletionOption.ResponseHeadersRead);
-                    response.EnsureSuccessStatusCode();
-
-                    using var zipStream = await response.Content.ReadAsStreamAsync();
-                    using var zipInput = new ZipInputStream(zipStream);
-
-                    ZipEntry entry;
-                    byte[] inputBuffer = new byte[81920];           // Buffer de leitura do ZIP
-                    char[] charBuffer = new char[81920];            // Buffer de chars ISO-8859-1
-                    byte[] outputBuffer = new byte[81920 * 2];      // Buffer para UTF-8 (maior por segurança)
-
-                    var isoEncoding = Encoding.GetEncoding("ISO-8859-1");
-                    var utf8Encoding = new UTF8Encoding(false);
-
-                    while ((entry = zipInput.GetNextEntry()) != null)
-                    {
-                        if (!entry.IsFile) continue;
-
-                        string entryPath = Path.Combine(arquivePath, entry.Name);
-                        //Directory.CreateDirectory(Path.GetDirectoryName(entryPath)!);
-
-                        using var fileStream = File.Create(entryPath);
-
-                        int bytesRead;
-                        while ((bytesRead = zipInput.Read(inputBuffer, 0, inputBuffer.Length)) > 0)
-                        {
-                            // Converte diretamente os bytes ISO-8859-1 para chars
-                            int charsRead = isoEncoding.GetChars(inputBuffer, 0, bytesRead, charBuffer, 0);
-
-                            // Converte chars para UTF-8 bytes no buffer de saída
-                            int utf8BytesCount = utf8Encoding.GetBytes(charBuffer, 0, charsRead, outputBuffer, 0);
-
-                            // Escreve no arquivo final
-                            await fileStream.WriteAsync(outputBuffer, 0, utf8BytesCount);
-                        }
-                    }
-
+                    await ProcessDownloadAndExtraction(urlArquive, arquivePath, arquive, isoEncoding, utf8Encoding, inputBuffer, charBuffer, outputBuffer, directoryName);
                     Console.WriteLine($" - {arquive} concluído com sucesso!");
                     return;
                 }
@@ -82,12 +67,61 @@ namespace download
                 {
                     attempt++;
                     Console.WriteLine($" - Tentativa {attempt} de {arquive} falhou: {ex.Message}");
-                    if (attempt >= maxRetries) throw;
+                    if (attempt >= maxRetries)
+                    {
+                        throw;
+                    }
                     await Task.Delay(2000);
                 }
             }
         }
 
+        private static async Task ProcessDownloadAndExtraction(string url, string destinationPath, string arquiveName, Encoding isoEncoding, Encoding utf8Encoding, byte[] inputBuffer, char[] charBuffer, byte[] outputBuffer, string headerReference)
+        {
+            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+
+            using var zipStream = await response.Content.ReadAsStreamAsync();
+            using var zipInput = new ZipInputStream(zipStream);
+
+            ZipEntry entry;
+            while ((entry = zipInput.GetNextEntry()) != null)
+            {
+                if (!entry.IsFile) continue;
+
+                string entryPath = Path.Combine(destinationPath, entry.Name);
+
+                // Proteção contra path traversal
+                if (!Path.GetFullPath(entryPath).StartsWith(Path.GetFullPath(destinationPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"Caminho inválido no ZIP: {entry.Name}");
+                }
+
+                using var fileStream = File.Create(entryPath);
+                byte[] headerBytes = utf8Encoding.GetBytes(header[headerReference]);
+                await fileStream.WriteAsync(headerBytes, 0, headerBytes.Length);
+
+                int bytesRead;
+                while ((bytesRead = zipInput.Read(inputBuffer, 0, inputBuffer.Length)) > 0)
+                {
+                    int charsRead = isoEncoding.GetChars(inputBuffer, 0, bytesRead, charBuffer, 0);
+                    for (int i = 0; i < charsRead; i++)
+                    {
+                        switch (charBuffer[i])
+                        {
+                            case ';':
+                                charBuffer[i] = ',';
+                                break;
+                            case ',':
+                                charBuffer[i] = '.';
+                                break;
+                        }
+                    }
+                    int utf8BytesCount = utf8Encoding.GetBytes(charBuffer, 0, charsRead, outputBuffer, 0);
+                    await fileStream.WriteAsync(outputBuffer, 0, utf8BytesCount);
+                }
+            }
+        }
 
         public static async Task Agendamento()
         {
