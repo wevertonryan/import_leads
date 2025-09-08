@@ -8,6 +8,6 @@ internal class Program
 {
     private static async Task Main()
     {
-        await ReceitaImporter2.Start();
+        await ReceitaImporter.Start();
     }
 }

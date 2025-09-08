@@ -1,246 +1,150 @@
-﻿/*
-
-using ICSharpCode.SharpZipLib.Core;
-using ICSharpCode.SharpZipLib.Zip;
+﻿using ICSharpCode.SharpZipLib.Zip;
 using MongoDB.Bson;
 using MongoDB.Driver;
-using System;
-using System.Collections.Generic;
+using System.Buffers;
 using System.Diagnostics;
-using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading;
-using System.Threading.Tasks;
 
-namespace download
+namespace download_descompactacao
 {
     public static class ReceitaImporter
     {
-        private static readonly HttpClient client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-        private static readonly SemaphoreSlim semaphore = new SemaphoreSlim(3); // Limite de 3 downloads simultâneos
-        private static readonly IMongoClient mongoClient = new MongoClient("mongodb://localhost:27017");
-        private static readonly IMongoDatabase mongoDatabase = mongoClient.GetDatabase("LeadSearch");
-        private static readonly Dictionary<string, string[]> header = new Dictionary<string, string[]>
+        private static readonly HttpClient httpClient = new()
         {
-            {"Cnaes", new string[] {"codigo", "descricao"} },
-            {"Empresas", new string[] {"cnpjBase","razaoSocial","naturezaJuridica","qualificacaoResponsavel","capitalSocial","porteEmpresa","enteFederativo"} },
-            {"Estabelecimentos", new string[] {"cnpjBase","cnpjOrdem","cnpjDV","matrizFilial","nomeFantasia","situacaoCadastral","dataSituacaoCadastral","motivoSituacaoCadastral","cidadeExterior","pais","dataInicioAtividade","cnaePrincipal","cnaeSecundario","tipoLogradouro","logradouro","numero","complemento","bairro","CEP","UF","municipio","ddd1","telefone1","ddd2","telefone2","dddFAX","FAX","correioEletronico","situacaoEspecial","dataSituacaoEspecial"} },
-            {"Motivos", new string[] {"codigo","descricao"} },
-            {"Municipios", new string[] {"codigo","descricao"} },
-            {"Naturezas", new string[] {"codigo","descricao"} },
-            {"Paises", new string[] {"codigo","descricao"} },
-            {"Qualificacoes", new string[] {"codigo","descricao"} },
-            {"Simples", new string[] {"cnpjBase","opcaoDoSimples","dataOpcaoDoSimples","dataExclusaoDoSimples","MEI","dataOpcaoMEI","dataExclusaoMei"} },
-            {"Socios", new string[] {"cnpjBase","identificadoSocio","nomeSocio","cnpjCpf","qualificaoSocio","dataEntradaSociedade","pais","representanteLegal","nomeRepresentante","qualificacaoResponsavel","faixaEtaria"} }
+            Timeout = TimeSpan.FromMinutes(10),
+            DefaultRequestVersion = HttpVersion.Version20 // Melhor desempenho HTTP/2
+        };
+        private static readonly int MaxConcurrentDownloads = Math.Min(Environment.ProcessorCount, 8);
+        private static readonly SemaphoreSlim downloadSemaphore = new(MaxConcurrentDownloads);
+        private static readonly IMongoDatabase mongoDatabase = new MongoClient("mongodb://localhost:27017").GetDatabase("LeadSearch");
+
+        private static readonly Encoding Latin1Encoding = Encoding.GetEncoding("ISO-8859-1");
+
+        private static readonly Dictionary<string, string[]> headers = new()
+        {
+            ["Cnaes"] = ["codigo", "descricao"],
+            ["Empresas"] = ["cnpjBase", "razaoSocial", "naturezaJuridica", "qualificacaoResponsavel", "capitalSocial", "porteEmpresa", "enteFederativo"],
+            ["Estabelecimentos"] = ["cnpjBase", "cnpjOrdem", "cnpjDV", "matrizFilial", "nomeFantasia", "situacaoCadastral", "dataSituacaoCadastral", "motivoSituacaoCadastral", "cidadeExterior", "pais", "dataInicioAtividade", "cnaePrincipal", "cnaeSecundario", "tipoLogradouro", "logradouro", "numero", "complemento", "bairro", "CEP", "UF", "municipio", "ddd1", "telefone1", "ddd2", "telefone2", "dddFAX", "FAX", "correioEletronico", "situacaoEspecial", "dataSituacaoEspecial"],
+            ["Motivos"] = ["codigo", "descricao"],
+            ["Municipios"] = ["codigo", "descricao"],
+            ["Naturezas"] = ["codigo", "descricao"],
+            ["Paises"] = ["codigo", "descricao"],
+            ["Qualificacoes"] = ["codigo", "descricao"],
+            ["Simples"] = ["cnpjBase", "opcaoDoSimples", "dataOpcaoDoSimples", "dataExclusaoDoSimples", "MEI", "dataOpcaoMEI", "dataExclusaoMei"],
+            ["Socios"] = ["cnpjBase", "identificadoSocio", "nomeSocio", "cnpjCpf", "qualificaoSocio", "dataEntradaSociedade", "pais", "representanteLegal", "nomeRepresentante", "qualificacaoResponsavel", "faixaEtaria"]
         };
 
-        private static string PasteIdentifier(string arquive)
-        {
-            return new string(arquive
-                .TakeWhile(c => c != '.' && !char.IsDigit(c))
-                .ToArray());
-        }
-
-        public static async Task DownloadAndExtractAsync(string arquive, string url, int maxRetries = 3)
-        {
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-            string directoryName = PasteIdentifier(arquive);
-            string arquivePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DadosReceita", directoryName);
-            Directory.CreateDirectory(arquivePath);
-
-            string urlArquive = url + arquive;
-            int attempt = 0;
-
-            var isoEncoding = Encoding.GetEncoding("ISO-8859-1");
-            var utf8Encoding = new UTF8Encoding(false);
-
-            // Buffers compartilhados para a extração
-            byte[] inputBuffer = new byte[81920];
-            char[] charBuffer = new char[81920];
-            byte[] outputBuffer = new byte[81920 * 2];
-
-            while (attempt < maxRetries)
-            {
-                try
-                {
-                    await ProcessDownloadAndExtraction(urlArquive, arquivePath, arquive, isoEncoding, utf8Encoding, inputBuffer, charBuffer, outputBuffer, directoryName);
-                    Console.WriteLine($" - {arquive} concluído com sucesso!");
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    attempt++;
-                    Console.WriteLine($" - Tentativa {attempt} de {arquive} falhou: {ex.Message}");
-                    if (attempt >= maxRetries)
-                    {
-                        throw;
-                    }
-                    await Task.Delay(2000);
-                }
-            }
-        }
-        
-        private static async Task ProcessDownloadAndExtraction(string url, string destinationPath, string arquiveName, Encoding isoEncoding, Encoding utf8Encoding, byte[] inputBuffer, char[] charBuffer, byte[] outputBuffer, string headerReference)
-        {
-            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
-
-            using var zipStream = await response.Content.ReadAsStreamAsync();
-            using var zipInput = new ZipInputStream(zipStream);
-
-            ZipEntry entry;
-            while ((entry = zipInput.GetNextEntry()) != null)
-            {
-                if (!entry.IsFile) continue;
-
-                string entryPath = Path.Combine(destinationPath, entry.Name);
-
-                // Proteção contra path traversal
-                if (!Path.GetFullPath(entryPath).StartsWith(Path.GetFullPath(destinationPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException($"Caminho inválido no ZIP: {entry.Name}");
-                }
-
-                using var fileStream = File.Create(entryPath);
-                byte[] headerBytes = utf8Encoding.GetBytes(header[headerReference]);
-                await fileStream.WriteAsync(headerBytes, 0, headerBytes.Length);
-
-                int bytesRead;
-                while ((bytesRead = zipInput.Read(inputBuffer, 0, inputBuffer.Length)) > 0)
-                {
-                    int charsRead = isoEncoding.GetChars(inputBuffer, 0, bytesRead, charBuffer, 0);
-                    for (int i = 0; i < charsRead; i++)
-                    {
-                        if (charBuffer[i] == ';')
-                        {
-                            charBuffer[i] = ',';
-                        }
-                    }
-                    int utf8BytesCount = utf8Encoding.GetBytes(charBuffer, 0, charsRead, outputBuffer, 0);
-                    await fileStream.WriteAsync(outputBuffer, 0, utf8BytesCount);
-                }
-            }
-        }
-        /*
-        private static async Task ProcessDownloadAndExtraction(
-        string url, string destinationPath, string arquiveName,
-        Encoding isoEncoding, Encoding utf8Encoding,
-        byte[] inputBuffer, char[] charBuffer, byte[] outputBuffer,
-        string headerReference)
-        {
-            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
-
-            using var zipStream = await response.Content.ReadAsStreamAsync();
-            using var zipInput = new ZipInputStream(zipStream);
-
-            var headers = header[headerReference];
-            int batchSize = 1000;
-
-            var collection = mongoDatabase.GetCollection<BsonDocument>(headerReference);
-
-
-            ZipEntry entry;
-            while ((entry = zipInput.GetNextEntry()) != null)
-            {
-                if (!entry.IsFile) continue;
-
-                using var reader = new StreamReader(zipInput, isoEncoding);
-
-                // Lista para armazenar os documentos antes de inserir em lote
-                var batch = new List<BsonDocument>();
-
-                string line;
-                while ((line = await reader.ReadLineAsync()) != null)
-                {
-                    if (string.IsNullOrWhiteSpace(line)) continue;
-
-                    // Substituir `;` por `,` e tratar como CSV
-                    var values = line.Split(';');
-
-                    var doc = new BsonDocument();
-                    for (int i = 0; i < headers.Length && i < values.Length; i++)
-                    {
-                        doc[headers[i]] = values[i].Trim();
-                    }
-
-                    batch.Add(doc);
-
-                    if (batch.Count >= batchSize)
-                    {
-                        await collection.InsertManyAsync(batch);
-                        batch.Clear();
-                    }
-                }
-
-                // Inserir documentos restantes
-                if (batch.Count > 0)
-                {
-                    await collection.InsertManyAsync(batch);
-                }
-            }
-        }
-        
+        private static string GetCategoryFromFilename(string fileName)
+            => new string(fileName.TakeWhile(c => c != '.' && !char.IsDigit(c)).ToArray());
 
         public static async Task Start()
         {
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-            string url = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-08/";
+            string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-08/";
+            string html = await RetryAsync(() => httpClient.GetStringAsync(baseUrl), 3);
 
-            string html = "";
-            int attempt = 0;
-            while (attempt < 3)
-            {
-                try
-                {
-                    html = await client.GetStringAsync(url);
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    attempt++;
-                    Console.WriteLine($"Tentativa {attempt} falhou: {ex.Message}");
-                    if (attempt >= 3)
-                    {
-                        Console.WriteLine("Número de tentativas excedidas!");
-                        return;
-                    }
-                }
-            }
-
-            var matches = Regex.Matches(html, @"href=""([^""]+\.zip)""");
+            var zipMatches = Regex.Matches(html, @"href=""([^""]+\.zip)""");
             var tasks = new List<Task>();
 
             Console.WriteLine("|=====|  INICIANDO DOWNLOAD DOS DADOS |=====|");
+            var sw = Stopwatch.StartNew();
 
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
-            foreach (Match match in matches)
+            foreach (Match match in zipMatches)
             {
-                string arquiveName = match.Groups[1].Value;
-                await semaphore.WaitAsync(); // espera até ter permissão para iniciar download
+                string fileName = match.Groups[1].Value;
+                string category = GetCategoryFromFilename(fileName);
 
+                if (!headers.ContainsKey(category)) continue;
+
+                await downloadSemaphore.WaitAsync();
                 tasks.Add(Task.Run(async () =>
                 {
                     try
                     {
-                        await DownloadAndExtractAsync(arquiveName, url);
+                        await DownloadAndProcessFileAsync(baseUrl + fileName, category);
+                        Console.WriteLine($" - {fileName} concluído com sucesso!");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Erro ao processar {fileName}: {ex.Message}");
                     }
                     finally
                     {
-                        semaphore.Release(); // libera para outro download
+                        downloadSemaphore.Release();
                     }
                 }));
             }
 
-            await Task.WhenAll(tasks); // aguarda todos os downloads terminarem
-            stopwatch.Stop();
-            Console.WriteLine("Todos os downloads foram concluídos!");
-            Console.WriteLine($"Tempo total de Download: {stopwatch.Elapsed.TotalSeconds:F2} segundos");
+            await Task.WhenAll(tasks);
+            sw.Stop();
+            Console.WriteLine($"Todos os downloads concluídos em {sw.Elapsed.TotalSeconds:F2}s.");
+        }
+
+        private static async Task DownloadAndProcessFileAsync(string url, string category)
+        {
+            var response = await RetryAsync(() => httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead), 3);
+            response.EnsureSuccessStatusCode();
+
+            await using var zipStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            using var zipInput = new ZipInputStream(zipStream);
+            zipInput.IsStreamOwner = false;
+
+            var collection = mongoDatabase.GetCollection<BsonDocument>(category);
+            var expectedHeaders = headers[category];
+
+            ZipEntry entry;
+            while ((entry = zipInput.GetNextEntry()) != null)
+            {
+                if (!entry.IsFile) continue;
+
+                using var reader = new StreamReader(zipInput, Latin1Encoding, detectEncodingFromByteOrderMarks: false, bufferSize: 8192);
+                var batch = new List<BsonDocument>(capacity: 5000);
+
+                string? line;
+                while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+
+                    line = line.Replace("\"","");
+                    var values = line.Split(';');
+                    if (values.Length != expectedHeaders.Length) continue;
+
+                    var doc = new BsonDocument();
+                    for (int i = 0; i < expectedHeaders.Length; i++)
+                    {
+                        doc[expectedHeaders[i]] = values[i].Trim();
+                    }
+
+                    batch.Add(doc);
+                    if (batch.Count >= 5000)
+                    {
+                        await collection.InsertManyAsync(batch).ConfigureAwait(false);
+                        batch.Clear();
+                    }
+                }
+
+                if (batch.Count > 0)
+                    await collection.InsertManyAsync(batch).ConfigureAwait(false);
+            }
+        }
+
+        private static async Task<T> RetryAsync<T>(Func<Task<T>> action, int maxAttempts, int delayMs = 2000)
+        {
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                try
+                {
+                    return await action().ConfigureAwait(false);
+                }
+                catch when (attempt < maxAttempts - 1)
+                {
+                    await Task.Delay(delayMs << attempt).ConfigureAwait(false); // Backoff exponencial
+                }
+            }
+            return await action().ConfigureAwait(false); // Última tentativa sem catch
         }
     }
 }
-*/
