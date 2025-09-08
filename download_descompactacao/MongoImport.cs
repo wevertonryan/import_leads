@@ -66,8 +66,8 @@ namespace download_descompactacao
             string bancoNome = "LeadSearch";
             var psi = new ProcessStartInfo
             {
-                FileName = @"C:\Program Files\MongoDB\Tools\100\bin\mongoimport.exe",
-                Arguments = $"--db {bancoNome} --collection {diretorio} --type csv --file \"{arquivoCsv}\" --headerline --numInsertionWorkers 4",
+                FileName = "mongoimport",
+                Arguments = $"--db {bancoNome} --collection {diretorio} --type csv --file \"{arquivoCsv}\" --batchSize 5000 --headerline --numInsertionWorkers 4",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,

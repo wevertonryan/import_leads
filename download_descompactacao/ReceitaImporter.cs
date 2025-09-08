@@ -1,5 +1,9 @@
-﻿using ICSharpCode.SharpZipLib.Core;
+﻿/*
+
+using ICSharpCode.SharpZipLib.Core;
 using ICSharpCode.SharpZipLib.Zip;
+using MongoDB.Bson;
+using MongoDB.Driver;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -17,18 +21,20 @@ namespace download
     {
         private static readonly HttpClient client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         private static readonly SemaphoreSlim semaphore = new SemaphoreSlim(3); // Limite de 3 downloads simultâneos
-        private static readonly Dictionary<string, string> header = new Dictionary<string, string>
+        private static readonly IMongoClient mongoClient = new MongoClient("mongodb://localhost:27017");
+        private static readonly IMongoDatabase mongoDatabase = mongoClient.GetDatabase("LeadSearch");
+        private static readonly Dictionary<string, string[]> header = new Dictionary<string, string[]>
         {
-            {"Cnaes", "\"codigo\",\"descricao\"\n" },
-            {"Empresas", "\"cnpjBase\",\"razaoSocial\",\"naturezaJuridica\",\"qualificacaoResponsavel\",\"capitalSocial\",\"porteEmpresa\",\"enteFederativo\"\n" },
-            {"Estabelecimentos", "\"cnpjBase\",\"cnpjOrdem\",\"cnpjDV\",\"matrizFilial\",\"nomeFantasia\",\"situacaoCadastral\",\"dataSituacaoCadastral\",\"motivoSituacaoCadastral\",\"cidadeExterior\",\"pais\",\"dataInicioAtividade\",\"cnaePrincipal\",\"cnaeSecundario\",\"tipoLogradouro\",\"logradouro\",\"numero\",\"complemento\",\"bairro\",\"CEP\",\"UF\",\"municipio\",\"ddd1\",\"telefone1\",\"ddd2\",\"telefone2\",\"dddFAX\",\"FAX\",\"correioEletronico\",\"situacaoEspecial\",\"dataSituacaoEspecial\"\n" },
-            {"Motivos", "\"codigo\",\"descricao\"\n" },
-            {"Municipios", "\"codigo\",\"descricao\"\n" },
-            {"Naturezas", "\"codigo\",\"descricao\"\n" },
-            {"Paises", "\"codigo\",\"descricao\"\n" },
-            {"Qualificacoes", "\"codigo\",\"descricao\"\n" },
-            {"Simples", "\"cnpjBase\",\"opcaoDoSimples\",\"dataOpcaoDoSimples\",\"dataExclusaoDoSimples\",\"MEI\",\"dataOpcaoMEI\",\"dataExclusaoMei\"\n" },
-            {"Socios", "\"cnpjBase\",\"identificadoSocio\",\"nomeSocio\",\"cnpjCpf\",\"qualificaoSocio\",\"dataEntradaSociedade\",\"pais\",\"representanteLegal\",\"nomeRepresentante\",\"qualificacaoResponsavel\",\"faixaEtaria\"\n" }
+            {"Cnaes", new string[] {"codigo", "descricao"} },
+            {"Empresas", new string[] {"cnpjBase","razaoSocial","naturezaJuridica","qualificacaoResponsavel","capitalSocial","porteEmpresa","enteFederativo"} },
+            {"Estabelecimentos", new string[] {"cnpjBase","cnpjOrdem","cnpjDV","matrizFilial","nomeFantasia","situacaoCadastral","dataSituacaoCadastral","motivoSituacaoCadastral","cidadeExterior","pais","dataInicioAtividade","cnaePrincipal","cnaeSecundario","tipoLogradouro","logradouro","numero","complemento","bairro","CEP","UF","municipio","ddd1","telefone1","ddd2","telefone2","dddFAX","FAX","correioEletronico","situacaoEspecial","dataSituacaoEspecial"} },
+            {"Motivos", new string[] {"codigo","descricao"} },
+            {"Municipios", new string[] {"codigo","descricao"} },
+            {"Naturezas", new string[] {"codigo","descricao"} },
+            {"Paises", new string[] {"codigo","descricao"} },
+            {"Qualificacoes", new string[] {"codigo","descricao"} },
+            {"Simples", new string[] {"cnpjBase","opcaoDoSimples","dataOpcaoDoSimples","dataExclusaoDoSimples","MEI","dataOpcaoMEI","dataExclusaoMei"} },
+            {"Socios", new string[] {"cnpjBase","identificadoSocio","nomeSocio","cnpjCpf","qualificaoSocio","dataEntradaSociedade","pais","representanteLegal","nomeRepresentante","qualificacaoResponsavel","faixaEtaria"} }
         };
 
         private static string PasteIdentifier(string arquive)
@@ -76,7 +82,7 @@ namespace download
                 }
             }
         }
-
+        
         private static async Task ProcessDownloadAndExtraction(string url, string destinationPath, string arquiveName, Encoding isoEncoding, Encoding utf8Encoding, byte[] inputBuffer, char[] charBuffer, byte[] outputBuffer, string headerReference)
         {
             using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
@@ -118,6 +124,66 @@ namespace download
                 }
             }
         }
+        /*
+        private static async Task ProcessDownloadAndExtraction(
+        string url, string destinationPath, string arquiveName,
+        Encoding isoEncoding, Encoding utf8Encoding,
+        byte[] inputBuffer, char[] charBuffer, byte[] outputBuffer,
+        string headerReference)
+        {
+            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+
+            using var zipStream = await response.Content.ReadAsStreamAsync();
+            using var zipInput = new ZipInputStream(zipStream);
+
+            var headers = header[headerReference];
+            int batchSize = 1000;
+
+            var collection = mongoDatabase.GetCollection<BsonDocument>(headerReference);
+
+
+            ZipEntry entry;
+            while ((entry = zipInput.GetNextEntry()) != null)
+            {
+                if (!entry.IsFile) continue;
+
+                using var reader = new StreamReader(zipInput, isoEncoding);
+
+                // Lista para armazenar os documentos antes de inserir em lote
+                var batch = new List<BsonDocument>();
+
+                string line;
+                while ((line = await reader.ReadLineAsync()) != null)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+
+                    // Substituir `;` por `,` e tratar como CSV
+                    var values = line.Split(';');
+
+                    var doc = new BsonDocument();
+                    for (int i = 0; i < headers.Length && i < values.Length; i++)
+                    {
+                        doc[headers[i]] = values[i].Trim();
+                    }
+
+                    batch.Add(doc);
+
+                    if (batch.Count >= batchSize)
+                    {
+                        await collection.InsertManyAsync(batch);
+                        batch.Clear();
+                    }
+                }
+
+                // Inserir documentos restantes
+                if (batch.Count > 0)
+                {
+                    await collection.InsertManyAsync(batch);
+                }
+            }
+        }
+        
 
         public static async Task Start()
         {
@@ -177,3 +243,4 @@ namespace download
         }
     }
 }
+*/
