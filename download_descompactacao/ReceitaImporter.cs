@@ -59,17 +59,14 @@ namespace download_descompactacao
 
             var zipMatches = Regex.Matches(html, @"href=""([^""]+\.zip)""");
             var tasks = new List<Task>();
-            string[] documentos = ["Socios1.zip", "Socios2.zip", "Socios3.zip"];
 
             Console.WriteLine("|=====|  INICIANDO DOWNLOAD DOS DADOS |=====|");
             var sw = new Stopwatch();
             sw.Start();
 
-            /*foreach (Match match in zipMatches)
+            foreach (Match match in zipMatches)
             {
-                string fileName = match.Groups[1].Value;*/
-            foreach (string fileName in documentos)
-            {
+                string fileName = match.Groups[1].Value;
                 string category = GetCategoryFromFilename(fileName);
 
                 if (!headers.ContainsKey(category)) continue;
@@ -85,7 +82,6 @@ namespace download_descompactacao
                     catch (Exception ex)
                     {
                         Console.WriteLine($"Erro ao processar {fileName}: {ex.Message}");
-                        Console.WriteLine($"Stack Trace: {ex.StackTrace}");
                     }
                     finally
                     {
