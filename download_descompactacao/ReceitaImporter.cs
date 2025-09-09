@@ -42,18 +42,34 @@ namespace download_descompactacao
 
         public static async Task Start()
         {
+            await DropAllCollectionsAsync();
+
             string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-08/";
-            string html = await RetryAsync(() => httpClient.GetStringAsync(baseUrl), 3);
+            string html;
+            try
+            {
+                html = await RetryAsync(() => httpClient.GetStringAsync(baseUrl), 3);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Falha ao obter a lista de arquivos da URL base: {baseUrl}");
+                Console.WriteLine($"Erro: {ex.Message}");
+                return;
+            }
 
             var zipMatches = Regex.Matches(html, @"href=""([^""]+\.zip)""");
             var tasks = new List<Task>();
+            string[] documentos = ["Socios1.zip", "Socios2.zip", "Socios3.zip"];
 
             Console.WriteLine("|=====|  INICIANDO DOWNLOAD DOS DADOS |=====|");
-            var sw = Stopwatch.StartNew();
+            var sw = new Stopwatch();
+            sw.Start();
 
-            foreach (Match match in zipMatches)
+            /*foreach (Match match in zipMatches)
             {
-                string fileName = match.Groups[1].Value;
+                string fileName = match.Groups[1].Value;*/
+            foreach (string fileName in documentos)
+            {
                 string category = GetCategoryFromFilename(fileName);
 
                 if (!headers.ContainsKey(category)) continue;
@@ -69,6 +85,7 @@ namespace download_descompactacao
                     catch (Exception ex)
                     {
                         Console.WriteLine($"Erro ao processar {fileName}: {ex.Message}");
+                        Console.WriteLine($"Stack Trace: {ex.StackTrace}");
                     }
                     finally
                     {
@@ -99,7 +116,7 @@ namespace download_descompactacao
             {
                 if (!entry.IsFile) continue;
 
-                using var reader = new StreamReader(zipInput, Latin1Encoding, detectEncodingFromByteOrderMarks: false, bufferSize: 8192);
+                using var reader = new StreamReader(zipInput, Latin1Encoding, detectEncodingFromByteOrderMarks: false, bufferSize: 8192, leaveOpen: true);
                 var batch = new List<BsonDocument>(capacity: 5000);
 
                 string? line;
@@ -107,7 +124,7 @@ namespace download_descompactacao
                 {
                     if (string.IsNullOrWhiteSpace(line)) continue;
 
-                    line = line.Replace("\"","");
+                    line = line.Replace("\"", "");
                     var values = line.Split(';');
                     if (values.Length != expectedHeaders.Length) continue;
 
@@ -130,21 +147,47 @@ namespace download_descompactacao
             }
         }
 
+        public static async Task DropAllCollectionsAsync()
+        {
+            Console.WriteLine("|=====| INICIANDO LIMPEZA DO BANCO DE DADOS |=====|");
+            var collectionNamesCursor = await mongoDatabase.ListCollectionNamesAsync();
+            var collectionNames = await collectionNamesCursor.ToListAsync();
+
+            if (!collectionNames.Any())
+            {
+                Console.WriteLine("Nenhuma coleção encontrada para apagar.");
+            }
+            else
+            {
+                foreach (var collectionName in collectionNames)
+                {
+                    Console.WriteLine($" - Apagando coleção: {collectionName}");
+                    await mongoDatabase.DropCollectionAsync(collectionName);
+                }
+            }
+            Console.WriteLine("|=====| LIMPEZA DO BANCO DE DADOS CONCLUÍDA |=====|");
+            Console.WriteLine();
+        }
+
         private static async Task<T> RetryAsync<T>(Func<Task<T>> action, int maxAttempts, int delayMs = 2000)
         {
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+            List<Exception> exceptions = new();
             for (int attempt = 0; attempt < maxAttempts; attempt++)
             {
                 try
                 {
-                    return await action().ConfigureAwait(false);
+                    return await action();
                 }
-                catch when (attempt < maxAttempts - 1)
+                catch (Exception ex)
                 {
-                    await Task.Delay(delayMs << attempt).ConfigureAwait(false); // Backoff exponencial
+                    exceptions.Add(ex);
+                    if (attempt < maxAttempts - 1)
+                    {
+                        await Task.Delay(delayMs * (int)Math.Pow(2, attempt)); // Backoff exponencial
+                    }
                 }
             }
-            return await action().ConfigureAwait(false); // Última tentativa sem catch
+            throw new AggregateException($"Falha após {maxAttempts} tentativas.", exceptions);
         }
     }
 }
