@@ -40,15 +40,24 @@ namespace download_descompactacao
         private static string GetCategoryFromFilename(string fileName)
             => new string(fileName.TakeWhile(c => c != '.' && !char.IsDigit(c)).ToArray());
 
+        private static async Task<string[]> GetFilesName(string baseUrl)
+        {
+            string html;
+            html = await RetryAsync(() => httpClient.GetStringAsync(baseUrl), 3);
+            return Regex.Matches(html, @"href=""([^""]+\.zip)""")
+                    .Cast<Match>()
+                    .Select(m => m.Groups[1].Value)
+                    .ToArray();
+        }
+
         public static async Task Start()
         {
             await DropAllCollectionsAsync();
 
             string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-08/";
-            string html;
-            try
-            {
-                html = await RetryAsync(() => httpClient.GetStringAsync(baseUrl), 3);
+            string[] zipMatches;
+            try {
+                zipMatches = await GetFilesName(baseUrl);
             }
             catch (Exception ex)
             {
@@ -56,17 +65,14 @@ namespace download_descompactacao
                 Console.WriteLine($"Erro: {ex.Message}");
                 return;
             }
-
-            var zipMatches = Regex.Matches(html, @"href=""([^""]+\.zip)""");
             var tasks = new List<Task>();
 
             Console.WriteLine("|=====|  INICIANDO DOWNLOAD DOS DADOS |=====|");
             var sw = new Stopwatch();
             sw.Start();
 
-            foreach (Match match in zipMatches)
+            foreach (string fileName in zipMatches)
             {
-                string fileName = match.Groups[1].Value;
                 string category = GetCategoryFromFilename(fileName);
 
                 if (!headers.ContainsKey(category)) continue;
@@ -92,7 +98,9 @@ namespace download_descompactacao
 
             await Task.WhenAll(tasks);
             sw.Stop();
-            Console.WriteLine($"Todos os downloads concluídos em {sw.Elapsed.TotalSeconds:F2}s.");
+
+            string Tempo = String.Format("{0:00}h {1:00}m {2:00}s {3:000}ms", sw.Elapsed.Hours, sw.Elapsed.Minutes, sw.Elapsed.Seconds, sw.Elapsed.Milliseconds);
+            Console.WriteLine($"Todos os downloads concluídos em {Tempo}.");
         }
 
         private static async Task DownloadAndProcessFileAsync(string url, string category)
@@ -143,7 +151,7 @@ namespace download_descompactacao
             }
         }
 
-        public static async Task DropAllCollectionsAsync()
+        private static async Task DropAllCollectionsAsync()
         {
             Console.WriteLine("|=====| INICIANDO LIMPEZA DO BANCO DE DADOS |=====|");
             var collectionNamesCursor = await mongoDatabase.ListCollectionNamesAsync();
