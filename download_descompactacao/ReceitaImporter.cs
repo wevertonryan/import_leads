@@ -1,4 +1,4 @@
-﻿using ICSharpCode.SharpZipLib.Zip;
+using ICSharpCode.SharpZipLib.Zip;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using System.Buffers;
@@ -25,20 +25,39 @@ namespace download_descompactacao
         //Conexão com o MongoDB
         private static readonly IMongoDatabase mongoDatabase = new MongoClient(ConnectionDatabaseConfig["ConnectionString"]).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
 
-        private static readonly Channel<byte> Download = Channel.CreateUnbounded<byte>();
-
         public static async Task Start()
         {
-           
+
         }
 
+        private static async Task ProcessDocument()
+        {
+            Channel<byte> DataDownload = Channel.CreateUnbounded<byte>(); //por limite com base na memoria RAM
+            Channel<BsonDocument> DataProcess = Channel.CreateUnbounded<BsonDocument>();
+
+            ICollection<Task> downloaders = new List<Task>();
+            ICollection<Task> processers = new List<Task>();
+            ICollection<Task> importers = new List<Task>();
+
+            await Task.WhenAll(downloaders);
+            DataDownload.Writer.Complete();
+            await Task.WhenAll(processers);
+            DataProcess.Writer.Complete();
+            await Task.WhenAll(importers);
+
+            Console.WriteLine($"Arquivo {} Importado com Sucesso!");
+        }
         private static async Task Downloader(ChannelWriter<byte> writer)
         {
-           
+
         }
-        private static async Task Producer(ChannelReader<byte> reader)
+        private static async Task Processer(ChannelReader<byte> reader, ChannelReader<BsonDocument> writer)
         {
-            
+
+        }
+        private static async Task Importer(ChannelReader<BsonDocument> reader)
+        {
+
         }
     }
 }
