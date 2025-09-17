@@ -13,6 +13,12 @@ namespace download_descompactacao
 {
     public static class ReceitaImporter
     {
+        private static readonly Dictionary<string, int> ComputerConfig = new()
+        {
+            ["Cores"] = Environment.ProcessorCount,
+            ["RAM"] = 0,
+            ["Disk"] = 0
+        };
         //Configurações para conexão com o MongoDB
         //OBS: posteriormente não ficará aqui por questões de segurança
         private static readonly Dictionary<string, string> ConnectionDatabaseConfig = new()

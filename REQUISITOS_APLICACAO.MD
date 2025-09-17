@@ -7,6 +7,9 @@
 - **Dados Atualizados:** Pegar a pasta mais recente disponivel, e ver se é daquele mês, se não for tentar novamente o outro dia, repetir até encontrar.
 - **Suporte a multi-arquivo:** Múltiplos arquivos da Receita baixados e processados em paralelo, respeitando limites de recursos.
 - Testar posteriormente com o mongoimport para ver qual tem melhor desempenho.
+- Fazer requerimento do que é necessário para rodar o software e avisar (caso não tenha baixar quando possivel)
+- Analise do Progresso atual antes de iniciar e retornar
+- Classe para registrar progresso
 
 ## 1° Download
 - **Controle de memória:** caso o pipeline encha a RAM, gravar temporariamente no disco (fila de overflow) para não travar a aplicação.
@@ -39,3 +42,10 @@
 - **Descarte de memória:** após inserção, limpar referências e liberar RAM.
 - **Validação pós-inserção:** opcionalmente, verificar quantidade de documentos inseridos vs. quantidade do batch, para garantir integridade.
 - **Paralelismo controlado:** múltiplos consumidores inserindo batches, respeitando limites de conexões e RAM.
+
+Start()
+- Verificar se vou iniciar do zero ou se vou continuar um processo em andamento
+- Para fazer isso vou verificar se existe um documento Progresso
+	- Caso exista eu vou verificar a integridade desse documento com a aplicação real
+		- Caso seja integro, continuar de maneira normal
+		- Do contrário, informar que alguma coisa está errada, e informar a aplicação, com duas opções ()
