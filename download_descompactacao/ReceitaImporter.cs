@@ -1,6 +1,7 @@
 using ICSharpCode.SharpZipLib.Zip;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using MongoDB.Driver.Core.Configuration;
 using System.Buffers;
 using System.Diagnostics;
 using System.Net;
@@ -33,6 +34,7 @@ namespace download_descompactacao
             Timeout = TimeSpan.FromMinutes(10),
             DefaultRequestVersion = HttpVersion.Version20 // Melhor desempenho HTTP/2
         };
+        private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-08/";
 
         /* CÓDIGO (Métodos Públicos)
            * Start(): Começa do Zero ou Continua de onde parou
@@ -49,6 +51,14 @@ namespace download_descompactacao
         - Terá como Papel chamar os metodos para executar o processo de todos os arquivos */
         {
             Console.WriteLine("# Iniciando ReceitaImporter #");
+            /*if (!(await CheckMongoConnection()))
+            {
+                return;
+            }
+            if (!(await CheckHttpConnection()))
+            {
+                return;
+            } */
             Console.WriteLine("# ReceitaImporter Finalizado #");
         }
 
@@ -108,6 +118,45 @@ namespace download_descompactacao
         - Provavel que terá mais de um para esse processo*/
         {
 
+        }
+
+        // CheckConnection
+
+        public static async Task<bool> CheckMongoConnection()
+        {
+            try
+            {
+                var settings = MongoClientSettings.FromConnectionString(ConnectionDatabaseConfig["ConnectionString"]);
+                settings.ConnectTimeout = TimeSpan.FromSeconds(5);
+                settings.SocketTimeout = TimeSpan.FromSeconds(5);
+                settings.ServerSelectionTimeout = TimeSpan.FromSeconds(5);
+
+                var databaseTeste = new MongoClient(settings).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
+
+                await databaseTeste.RunCommandAsync<BsonDocument>(new BsonDocument("ping", 1));
+                Console.WriteLine("- Sucessfully MongoDB Conection");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"- Erro MongoDB: {ex.Message}");
+                return false;
+            }
+        }
+
+        public static async Task<bool> CheckHttpConnection()
+        {
+            try
+            {
+                var response = await httpClient.GetAsync(baseUrl);
+                Console.WriteLine("- Sucessfully Http Conection");
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"- Erro Http: {ex.Message}");
+                return false;
+            }
         }
     }
 }
