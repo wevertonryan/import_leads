@@ -1,9 +1,11 @@
 ## Progresso Geral da Importação
+OBS: Armazenar esse documento dentro do próprio mongoDB, e não deixar na máquina
 ### 1. Informações
 * **Status:** Configurando | Em Progresso | Interrompido (mensagem de erro) | Completo
 * **DataHora de Início:** timestamp
 * **DataHora de Conclusão:** timestamp (se aplicável)
 * **Tempo Decorrido:** `TimeSpan` acumulado apenas enquanto a importação estava ativa
+* **Pasta de Importação da Receita Federal:** A pasta que foi acessada no site da Receita Federal para poder realizar o download, da mesma pasta,
 * **Armazenamento Necessário (KB):** Armazenamento necessário para conseguir baixar todos os dados no dispositivo
 * **Total Importado (KB):** Total importado em KB até o momento
 ### 2. Tabelas MongoDB
@@ -40,6 +42,10 @@
 * **Registros Corrompidos:** linhas específicas (array/lista)
 * **Tentativas de Download:** int (opcional, útil para retry tracking)
 * **Logs:** mensagens específicas para aquele documento
+* **Historico de Registro (provavelmente não farei):** Seria um documento que eu criaria para cada arquivo da Receita Federal, que teria várias linhas, e cada linha seria uma inserção no banco, contendo as seguintes informações
+  ```text
+  TimeStamp | ConsumidorResponsavel | Vezes_Consumidor_Inseriu_noBanco | BatchInserido
+  ```
 
 ## Exemplo
 ```json
@@ -48,6 +54,7 @@
     "timeStampInicio": "2025-09-18T12:32:02Z",
     "timeStampConclusao": "2025-09-18T13:26:15Z",
     "tempoDecorrido": "00:54:13",
+    "pastaImportacaoRF": "2025-08",
     "armazenamentoNecessario": 15000000,
     "totalImportado": 10000000,
     "tabelasMongoDB": {

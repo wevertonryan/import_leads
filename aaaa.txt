@@ -21,14 +21,20 @@ if(DocumentoProgresso.Existe){
 }
 
 Partes:
+- Verificação da existencia de um Documento de Progresso (Caso tenha fazer a Validação dos Requerimentos comparando com ela)
 - Validação dos Requerimentos
    - Caso algo der errado tentar corrigir
    - Caso não seja possivel dar Exception e Finalizar aplicação
-- Teste de Continuação ou Inicio do Zero
 
 Requerimentos Necessários
-- Verificação de Conexão (MongoDB, Internet, Site Receita Federal)
 - Se tem os Pacotes Instalados Atualizados (MongoDB.Bson, MongoDB.Driver, SharpZipLib)
-- Configurações da Aplicação com Base no Recursos Disponiveis (CPU, Memoria RAM)
+- Diagnostico dos Recursos disponiveis na máquina e se é possivel ter mais recursos (verificar a existencia de um documento que limite a utilização dos recursos disponiveis)
+- Verificação de Conexão (MongoDB, Internet, Site Receita Federal)
+- Verificação de Permições (para gravar no MongoDB)
+- Pegar informações de todos os Arquivos
+	- Quantidade de Arquivos
+	- Tamanho de cada arquivo descompactado
 - Se tem espaço no Disco o suficiente para finalizar o download de tudo descompactado
-- Verificação de Permição para gravar no MongoDB
+- Pegar informações de quantos arquivos que tem, quanto cada um pesa, etc
+- Distribuição das Tarefas com recursos disponiveis
+- Configurações da Aplicação com Base no Recursos Disponiveis (CPU, Memoria RAM)

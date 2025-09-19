@@ -2,6 +2,7 @@ using ICSharpCode.SharpZipLib.Zip;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using MongoDB.Driver.Core.Configuration;
+using System;
 using System.Buffers;
 using System.Diagnostics;
 using System.Net;
@@ -34,7 +35,7 @@ namespace download_descompactacao
             Timeout = TimeSpan.FromMinutes(10),
             DefaultRequestVersion = HttpVersion.Version20 // Melhor desempenho HTTP/2
         };
-        private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-08/";
+        private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-09/";
 
         /* CÓDIGO (Métodos Públicos)
            * Start(): Começa do Zero ou Continua de onde parou
@@ -54,15 +55,12 @@ namespace download_descompactacao
             /*if (!(await CheckMongoConnection()))
             {
                 return;
-            }
-            if (!(await CheckHttpConnection()))
-            {
-                return;
-            } */
+            }*/
+            await ProcessFile("Cnaes");
             Console.WriteLine("# ReceitaImporter Finalizado #");
         }
 
-        private static async Task ProcessDocument()
+        private static async Task ProcessFile(string file)
         /* [ProcessDocument]
         - Método Responsavel pelo processo completo (download -> processamento -> importação) de um único
         - Também é onde ficarão os Canais (Channel)
@@ -71,26 +69,33 @@ namespace download_descompactacao
         {
             Channel<byte> DataDownload = Channel.CreateUnbounded<byte>(); //por limite com base na memoria RAM
             Channel<BsonDocument> DataProcess = Channel.CreateUnbounded<BsonDocument>();
+            int splitDownload = 2; //tem perigo de cortar no meio de um linha (registro), pois não tenho como dar split por linha, vou ter verificar onde é o fim daquela linha
 
             ICollection<Task> downloaders = new List<Task>();
             ICollection<Task> processors = new List<Task>();
             ICollection<Task> importers = new List<Task>();
 
-            //downloaders.Add(Downloader(DataDownload.Writer));
+            downloaders.Add(Downloader(DataDownload.Writer, 2));
             //processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             //importers.Add(Importer(DataProcess.Reader));
 
             await Task.WhenAll(downloaders);
             DataDownload.Writer.Complete();
-            await Task.WhenAll(processors);
-            DataProcess.Writer.Complete();
-            await Task.WhenAll(importers);
+            //await Task.WhenAll(processors);
+            //DataProcess.Writer.Complete();
+            //await Task.WhenAll(importers);
 
             Console.WriteLine($"Arquivo Importado com Sucesso!");
         }
 
+        private static async Task Trabalho()
+        {
+
+        }
+
         // PRODUTORES E CONSUMIDORES
-        private static async Task Downloader(ChannelWriter<byte> writer)
+
+        private static async Task Downloader(ChannelWriter<byte> writer, int block)
         /* [Downloader]
         - Produtor do Canal DataDownload
         - Irá realizar o download dos arquivos armazenando na RAM em Stream
@@ -98,8 +103,23 @@ namespace download_descompactacao
         - Terá provavelmente apenas 1, para baixar o arquivo inteiro, ou mais para realizar o download em partes 
         (só terá mais se tiver mais recurso disponivel mesmo baixando 3 arquivos simultaneamente)*/
         {
+            var request = new HttpRequestMessage(HttpMethod.Head, baseUrl);
+            var response = await RetryAsync(() => httpClient.SendAsync(request), 10);
+
+            if (response.IsSuccessStatusCode)
+            {
+                foreach (var header in response.Content.Headers)
+                {
+                    Console.WriteLine($"{header.Key}: {string.Join(", ", header.Value)}");
+                }
+            }
+            else
+            {
+                Console.WriteLine("Erro ao obter os cabeçalhos: " + response.StatusCode);
+            }
 
         }
+
         private static async Task Processor(ChannelReader<byte> reader, ChannelWriter<BsonDocument> writer)
         /* [Processor]
         - Consumidor do Canal DataDownload e Produtor do Canal DataProcess
@@ -157,6 +177,30 @@ namespace download_descompactacao
                 Console.WriteLine($"- Erro Http: {ex.Message}");
                 return false;
             }
+        }
+
+        // Melhorar Retry
+
+        private static async Task<T> RetryAsync<T>(Func<Task<T>> action, int maxAttempts, int delayMs = 2000)
+        {
+            List<Exception> exceptions = new();
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                try
+                {
+                    return await action();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Falha na {attempt}° tentativa");
+                    exceptions.Add(ex);
+                    if (attempt < maxAttempts - 1)
+                    {
+                        await Task.Delay(delayMs * (int)Math.Pow(2, attempt)); // Backoff exponencial
+                    }
+                }
+            }
+            throw new AggregateException($"Falha após {maxAttempts} tentativas.", exceptions);
         }
     }
 }
