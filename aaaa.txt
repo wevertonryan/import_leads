@@ -6,7 +6,7 @@ if(DocumentoProgresso.Existe){
       ContinuarDeOndeParou();
    } else {
       switch(Escolha){
-         case 1:
+         case 1: //dificilmente daria para pegar esse
             DocumentoProgresso = SituaçãoAtual;
             ContinuarDeOndeParou();
          case 2: //alterar apenas o necessário
@@ -28,7 +28,7 @@ Partes:
 
 Requerimentos Necessários
 - Se tem os Pacotes Instalados Atualizados (MongoDB.Bson, MongoDB.Driver, SharpZipLib)
-- Diagnostico dos Recursos disponiveis na máquina e se é possivel ter mais recursos (verificar a existencia de um documento que limite a utilização dos recursos disponiveis)
+- Diagnostico dos Recursos disponiveis na máquina e se é possivel ter mais recursos (verificar a existencia de um DocumentoConfiguração que limite a utilização dos recursos disponiveis)
 - Verificação de Conexão (MongoDB, Internet, Site Receita Federal)
 - Verificação de Permições (para gravar no MongoDB)
 - Pegar informações de todos os Arquivos
@@ -38,3 +38,19 @@ Requerimentos Necessários
 - Pegar informações de quantos arquivos que tem, quanto cada um pesa, etc
 - Distribuição das Tarefas com recursos disponiveis
 - Configurações da Aplicação com Base no Recursos Disponiveis (CPU, Memoria RAM)
+
+
+
+
+
+
+
+1. acessar a pasta mais atual
+2. pegar todos os nomes disponiveis
+
+passos para o download dos dados
+1. acessar o site da receita federal
+2. fazer requisição GetAsyncStream para a RAM
+3. Armazenar em blocos de bytes
+4. Enviar para o Channel
+
