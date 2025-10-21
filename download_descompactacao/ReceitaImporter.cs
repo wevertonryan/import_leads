@@ -35,7 +35,8 @@ namespace download_descompactacao
             Timeout = TimeSpan.FromMinutes(10),
             DefaultRequestVersion = HttpVersion.Version20 // Melhor desempenho HTTP/2
         };
-        private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-09/";
+        private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-09/Empresas1.zip";
+        private static readonly Encoding Latin1Encoding = Encoding.GetEncoding("ISO-8859-1");
 
         /* CÓDIGO (Métodos Públicos)
            * Start(): Começa do Zero ou Continua de onde parou
@@ -69,18 +70,81 @@ namespace download_descompactacao
         {
             Channel<byte> DataDownload = Channel.CreateUnbounded<byte>(); //por limite com base na memoria RAM
             Channel<BsonDocument> DataProcess = Channel.CreateUnbounded<BsonDocument>();
-            int splitDownload = 2; //tem perigo de cortar no meio de um linha (registro), pois não tenho como dar split por linha, vou ter verificar onde é o fim daquela linha
 
             ICollection<Task> downloaders = new List<Task>();
             ICollection<Task> processors = new List<Task>();
             ICollection<Task> importers = new List<Task>();
 
-            downloaders.Add(Downloader(DataDownload.Writer, 2));
+            const int BufferSize = 128 * 1024; // 128KB por leitura
+            HttpClient httpClient = new();
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+
+            var response = await httpClient.GetAsync(baseUrl, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+
+            await using var zipStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            using var zipInputStream = new ZipInputStream(zipStream);
+            zipInputStream.IsStreamOwner = false;
+
+            async Task Downloader(ChannelWriter<byte> writer)
+            /* [Downloader]
+            - Produtor do Canal DataDownload
+            - Irá realizar o download dos arquivos armazenando na RAM em Stream
+            - Irá extrair
+            - Ele irá armazenar em blocos (bytes), e irá adicionar esse blocos no Canal DataDownload
+            - Terá provavelmente apenas 1, para baixar o arquivo inteiro, ou mais para realizar o download em partes 
+            (só terá mais se tiver mais recurso disponivel mesmo baixando 3 arquivos simultaneamente)*/
+            {
+                ZipEntry entry;
+                while ((entry = zipInputStream.GetNextEntry()) != null)
+                {
+                    if (!entry.IsFile) continue;
+
+                    Console.WriteLine($"Lendo: {entry.Name}");
+
+                    int bytesRead;
+                    while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
+                    {
+                        // Copia apenas os dados lidos em um novo buffer
+                        byte[] chunk = new byte[bytesRead];
+                        Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
+
+                        // Envia para o canal
+                        await writer.WriteAsync(chunk);
+                    }
+                }
+
+                writer.Complete();
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            async Task Processor(ChannelReader<byte> reader, ChannelWriter<BsonDocument> writer)
+            /* [Processor]
+            - Consumidor do Canal DataDownload e Produtor do Canal DataProcess
+            - Irá realizar o processamento dos blocos fornecidos pelo Downloader
+            - Será feita a descompactação (leitura do arquivo)
+            - E criação do BsonDocument
+            - E a subtituição das aspas para vazio
+            - Provavel de ter mais de 1 para esse processo por arquivo*/
+            {
+
+            }
+
+            async Task Importer(ChannelReader<BsonDocument> reader)
+            /* [Importer]
+            - Consumidor do Canal DataProcess
+            - Irá realizar a importação dos Bson Document para o MongoDB
+            - Provavel que terá mais de um para esse processo*/
+            {
+
+            }
+
+            //downloaders.Add(Downloader(DataDownload.Writer));
             //processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             //importers.Add(Importer(DataProcess.Reader));
 
-            await Task.WhenAll(downloaders);
-            DataDownload.Writer.Complete();
+            //await Task.WhenAll(downloaders);
+            //DataDownload.Writer.Complete();
             //await Task.WhenAll(processors);
             //DataProcess.Writer.Complete();
             //await Task.WhenAll(importers);
@@ -88,57 +152,7 @@ namespace download_descompactacao
             Console.WriteLine($"Arquivo Importado com Sucesso!");
         }
 
-        private static async Task Trabalho()
-        {
-
-        }
-
         // PRODUTORES E CONSUMIDORES
-
-        private static async Task Downloader(ChannelWriter<byte> writer, int block)
-        /* [Downloader]
-        - Produtor do Canal DataDownload
-        - Irá realizar o download dos arquivos armazenando na RAM em Stream
-        - Ele irá armazenar em blocos (bytes), e irá adicionar esse blocos no Canal DataDownload
-        - Terá provavelmente apenas 1, para baixar o arquivo inteiro, ou mais para realizar o download em partes 
-        (só terá mais se tiver mais recurso disponivel mesmo baixando 3 arquivos simultaneamente)*/
-        {
-            var request = new HttpRequestMessage(HttpMethod.Head, baseUrl);
-            var response = await RetryAsync(() => httpClient.SendAsync(request), 10);
-
-            if (response.IsSuccessStatusCode)
-            {
-                foreach (var header in response.Content.Headers)
-                {
-                    Console.WriteLine($"{header.Key}: {string.Join(", ", header.Value)}");
-                }
-            }
-            else
-            {
-                Console.WriteLine("Erro ao obter os cabeçalhos: " + response.StatusCode);
-            }
-
-        }
-
-        private static async Task Processor(ChannelReader<byte> reader, ChannelWriter<BsonDocument> writer)
-        /* [Processor]
-        - Consumidor do Canal DataDownload e Produtor do Canal DataProcess
-        - Irá realizar o processamento dos blocos fornecidos pelo Downloader
-        - Será feita a descompactação (leitura do arquivo)
-        - E criação do BsonDocument
-        - E a subtituição das aspas para vazio
-        - Provavel de ter mais de 1 para esse processo por arquivo*/
-        {
-
-        }
-        private static async Task Importer(ChannelReader<BsonDocument> reader)
-        /* [Importer]
-        - Consumidor do Canal DataProcess
-        - Irá realizar a importação dos Bson Document para o MongoDB
-        - Provavel que terá mais de um para esse processo*/
-        {
-
-        }
 
         // CheckConnection
 
