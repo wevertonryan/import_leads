@@ -35,7 +35,7 @@ namespace download_descompactacao
             Timeout = TimeSpan.FromMinutes(10),
             DefaultRequestVersion = HttpVersion.Version20 // Melhor desempenho HTTP/2
         };
-        private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-09/Empresas1.zip";
+        private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-09/";
         private static readonly Encoding Latin1Encoding = Encoding.GetEncoding("ISO-8859-1");
 
         /* CÓDIGO (Métodos Públicos)
@@ -57,7 +57,7 @@ namespace download_descompactacao
             {
                 return;
             }*/
-            await ProcessFile("Cnaes");
+            await ProcessFile("Empresas1");
             Console.WriteLine("# ReceitaImporter Finalizado #");
         }
 
@@ -68,7 +68,8 @@ namespace download_descompactacao
         - Fará a Chamada dos Produtores e Consumidores 
         - Fará o Controle dinámico dos produtores e consumidores com base nos recursos disponiveis durante a execução (adição ou retiragem)*/
         {
-            Channel<byte> DataDownload = Channel.CreateUnbounded<byte>(); //por limite com base na memoria RAM
+            file = baseUrl + file + ".zip";
+            Channel<byte[]> DataDownload = Channel.CreateUnbounded<byte[]>(); //por limite com base na memoria RAM
             Channel<BsonDocument> DataProcess = Channel.CreateUnbounded<BsonDocument>();
 
             ICollection<Task> downloaders = new List<Task>();
@@ -79,7 +80,7 @@ namespace download_descompactacao
             HttpClient httpClient = new();
             byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
 
-            var response = await httpClient.GetAsync(baseUrl, HttpCompletionOption.ResponseHeadersRead);
+            var response = await httpClient.GetAsync(file, HttpCompletionOption.ResponseHeadersRead);
             response.EnsureSuccessStatusCode();
 
             await using var zipStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
