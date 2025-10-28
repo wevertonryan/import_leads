@@ -2,9 +2,11 @@ using ICSharpCode.SharpZipLib.Zip;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using MongoDB.Driver.Core.Configuration;
+using SharpCompress.Common;
 using System;
 using System.Buffers;
 using System.Diagnostics;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -30,11 +32,15 @@ namespace download_descompactacao
         };
         //Conexão com o MongoDB
         private static readonly IMongoDatabase mongoDatabase = new MongoClient(ConnectionDatabaseConfig["ConnectionString"]).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
-        private static readonly HttpClient httpClient = new()
+        private static readonly HttpClient httpClient = new(new HttpClientHandler
+        {
+            SslProtocols = System.Security.Authentication.SslProtocols.Tls12
+        })
         {
             Timeout = TimeSpan.FromMinutes(10),
             DefaultRequestVersion = HttpVersion.Version20 // Melhor desempenho HTTP/2
         };
+
         private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-09/";
         private static readonly Encoding Latin1Encoding = Encoding.GetEncoding("ISO-8859-1");
 
@@ -57,6 +63,7 @@ namespace download_descompactacao
             {
                 return;
             }*/
+
             await ProcessFile("Empresas1");
             Console.WriteLine("# ReceitaImporter Finalizado #");
         }
@@ -76,18 +83,28 @@ namespace download_descompactacao
             ICollection<Task> processors = new List<Task>();
             ICollection<Task> importers = new List<Task>();
 
-            const int BufferSize = 128 * 1024; // 128KB por leitura
-            HttpClient httpClient = new();
+            const int BufferSize = 128;//128 * 1024; // 128KB por leitura
             byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
 
-            var response = await httpClient.GetAsync(file, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
+            HttpResponseMessage response;
+            while (true)
+            {
+                try
+                {
+                    response = await httpClient.GetAsync(file, HttpCompletionOption.ResponseHeadersRead);
+                    response.EnsureSuccessStatusCode();
+                    break;
+                } catch (Exception ex)
+                {
+                    Console.WriteLine(ex.Message);
+                }
+            }
 
             await using var zipStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
             using var zipInputStream = new ZipInputStream(zipStream);
             zipInputStream.IsStreamOwner = false;
 
-            async Task Downloader(ChannelWriter<byte> writer)
+            async Task Downloader(ChannelWriter<byte[]> writer)
             /* [Downloader]
             - Produtor do Canal DataDownload
             - Irá realizar o download dos arquivos armazenando na RAM em Stream
@@ -104,10 +121,12 @@ namespace download_descompactacao
                     Console.WriteLine($"Lendo: {entry.Name}");
 
                     int bytesRead;
-                    while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
+                    for(int i = 0; i < 10; i++)
+                    //while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
                     {
+                        bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize);
                         // Copia apenas os dados lidos em um novo buffer
-                        byte[] chunk = new byte[bytesRead];
+                        byte[] chunk = ArrayPool<byte>.Shared.Rent(bytesRead);
                         Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
 
                         // Envia para o canal
@@ -119,7 +138,10 @@ namespace download_descompactacao
                 ArrayPool<byte>.Shared.Return(buffer);
             }
 
-            async Task Processor(ChannelReader<byte> reader, ChannelWriter<BsonDocument> writer)
+            string filePath = "C:\\Users\\0201392421023\\Downloads\\Teste\\";
+            Directory.CreateDirectory(filePath);
+
+            async Task Processor(ChannelReader<byte[]> reader, ChannelWriter<BsonDocument> writer)
             /* [Processor]
             - Consumidor do Canal DataDownload e Produtor do Canal DataProcess
             - Irá realizar o processamento dos blocos fornecidos pelo Downloader
@@ -128,7 +150,16 @@ namespace download_descompactacao
             - E a subtituição das aspas para vazio
             - Provavel de ter mais de 1 para esse processo por arquivo*/
             {
-
+                filePath += "arquivo";
+                int arquivo = 1;
+                await foreach (var chunk in reader.ReadAllAsync())
+                {
+                    var fileStream = new FileStream($"{ filePath }{arquivo}.txt", FileMode.Create, FileAccess.Write, FileShare.None);
+                    // Escreve o chunk no arquivo
+                    await fileStream.WriteAsync(chunk);
+                    ArrayPool<byte>.Shared.Return(chunk); // devolve pro pool
+                    arquivo++;
+                }
             }
 
             async Task Importer(ChannelReader<BsonDocument> reader)
@@ -140,14 +171,15 @@ namespace download_descompactacao
 
             }
 
-            //downloaders.Add(Downloader(DataDownload.Writer));
-            //processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
+            downloaders.Add(Downloader(DataDownload.Writer));
+            downloaders.Add(Downloader(DataDownload.Writer));
+            processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             //importers.Add(Importer(DataProcess.Reader));
 
-            //await Task.WhenAll(downloaders);
-            //DataDownload.Writer.Complete();
-            //await Task.WhenAll(processors);
-            //DataProcess.Writer.Complete();
+            await Task.WhenAll(downloaders);
+            DataDownload.Writer.Complete();
+            await Task.WhenAll(processors);
+            DataProcess.Writer.Complete();
             //await Task.WhenAll(importers);
 
             Console.WriteLine($"Arquivo Importado com Sucesso!");
