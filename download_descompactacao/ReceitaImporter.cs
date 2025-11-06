@@ -63,8 +63,11 @@ namespace download_descompactacao
             {
                 return;
             }*/
-
-            await ProcessFile("Empresas1");
+            try{
+                await ProcessFile("Empresas1");
+            } catch(Exception e){
+                Console.WriteLine(e.Message);
+            }
             Console.WriteLine("# ReceitaImporter Finalizado #");
         }
 
@@ -83,7 +86,7 @@ namespace download_descompactacao
             ICollection<Task> processors = new List<Task>();
             ICollection<Task> importers = new List<Task>();
 
-            const int BufferSize = 128;//128 * 1024; // 128KB por leitura
+            const int BufferSize = 1 * 1024; // 128KB por leitura
             byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
 
             HttpResponseMessage response;
@@ -133,12 +136,11 @@ namespace download_descompactacao
                         await writer.WriteAsync(chunk);
                     }
                 }
-
-                writer.Complete();
                 ArrayPool<byte>.Shared.Return(buffer);
+                Console.WriteLine("Passei");
             }
 
-            string filePath = "C:\\Users\\0201392421023\\Downloads\\Teste\\";
+            string filePath = @"C:\Users\0201392421023\Downloads\Teste\";
             Directory.CreateDirectory(filePath);
 
             async Task Processor(ChannelReader<byte[]> reader, ChannelWriter<BsonDocument> writer)
@@ -171,7 +173,6 @@ namespace download_descompactacao
 
             }
 
-            downloaders.Add(Downloader(DataDownload.Writer));
             downloaders.Add(Downloader(DataDownload.Writer));
             processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             //importers.Add(Importer(DataProcess.Reader));
