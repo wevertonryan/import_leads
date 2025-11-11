@@ -90,7 +90,7 @@ namespace download_descompactacao
             ICollection<Task> processors = new List<Task>();
             ICollection<Task> importers = new List<Task>();
 
-            const int BufferSize = 1 * 1024; // 128KB por leitura
+            const int BufferSize = 1 * 500;//1024; // 128KB por leitura
             byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
 
             HttpResponseMessage response;
@@ -124,7 +124,7 @@ namespace download_descompactacao
                 }
             }
 
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 1; i++)
             {
                 processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             }
@@ -169,30 +169,34 @@ namespace download_descompactacao
                 await foreach (var chunk in reader.ReadAllAsync())
                 {
                     // Merge leftover tail + new chunk
+                    Console.WriteLine("Chunk que Veio");
+                    Console.WriteLine(Encoding.Latin1.GetString(chunk));
                     buffer.AddRange(chunk);
-                    Console.WriteLine(Encoding.Latin1.GetString(buffer.ToArray()));
-                    Console.WriteLine("");
+                    Console.WriteLine("Add Range");
+                    Console.WriteLine(Encoding.Latin1.GetString(buffer.ToArray()) + '\n');
 
-                    int lineStart = 0;
-                    for (int i = 0; i < buffer.Count; i++)
+                    int tailStart = buffer.Count;
+                    for (int i = buffer.Count - 1; i >= 0; i--)
                     {
-                        // Newline byte (LF = 10)
                         if (buffer[i] == (byte)'\n')
                         {
-                            int lineLength = i - lineStart + 1;
-                            byte[] line = ArrayPool<byte>.Shared.Rent(lineLength);
-                            Buffer.BlockCopy(buffer.ToArray(), lineStart, line, 0, lineLength);
-
-                            await writer.WriteAsync(line);
-                            lineStart = i + 1;
+                            tailStart = i + 1;
+                            byte[] fullTextChunk = ArrayPool<byte>.Shared.Rent(i + 1);
+                            Buffer.BlockCopy(buffer.ToArray(), 0, fullTextChunk, 0, i + 1);
+                            await writer.WriteAsync(fullTextChunk);
+                            break;
                         }
                     }
 
                     // Keep only the unfinished tail
-                    if (lineStart < buffer.Count)
-                        buffer = buffer.Skip(lineStart).ToList();
-                    else
+                    if (tailStart < buffer.Count) 
+                    { 
+                        buffer = buffer.Skip(tailStart).ToList();
+                    } 
+                    else 
+                    {
                         buffer.Clear();
+                    }
 
                     ArrayPool<byte>.Shared.Return(chunk);
                 }
@@ -219,14 +223,14 @@ namespace download_descompactacao
             {
                 filePath += "arquivo";
                 int arquivo = 1;
-                /*await foreach (var chunk in reader.ReadAllAsync())
+                await foreach (var chunk in reader.ReadAllAsync())
                 {
                     using var fileStream = new FileStream($"{filePath}{arquivo}.txt", FileMode.Create, FileAccess.Write, FileShare.None);
                     // Escreve o chunk no arquivo
                     await fileStream.WriteAsync(chunk);
                     ArrayPool<byte>.Shared.Return(chunk); // devolve pro pool
                     arquivo++;
-                }*/
+                }
             }
 
             async Task Importer(ChannelReader<BsonDocument> reader)
