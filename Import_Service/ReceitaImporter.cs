@@ -13,7 +13,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 
-namespace download_descompactacao
+namespace Import_Service
 {
     public static class ReceitaImporter
     {
@@ -43,6 +43,7 @@ namespace download_descompactacao
 
         private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-09/";
         private static readonly Encoding Latin1Encoding = Encoding.GetEncoding("ISO-8859-1");
+        public record ChunkData(byte[] Buffer, int Length);
 
         /* CÓDIGO (Métodos Públicos)
            * Start(): Começa do Zero ou Continua de onde parou
@@ -64,7 +65,7 @@ namespace download_descompactacao
                 return;
             }*/
             try{
-                await ProcessFile("Empresas1");
+                await ProcessFile("Cnaes");
             } catch(Exception e){
                 Console.WriteLine(e.Message);
             }
@@ -78,19 +79,16 @@ namespace download_descompactacao
         - Fará a Chamada dos Produtores e Consumidores 
         - Fará o Controle dinámico dos produtores e consumidores com base nos recursos disponiveis durante a execução (adição ou retiragem)*/
         {
-            //vou tirar essas duas linhas, mas acho que ainda vou criar alguma coisa por conta do documento de progresso
-            string filePath = AppDomain.CurrentDomain.BaseDirectory.Replace(@"download_descompactacao\bin\Debug\net8.0", "") + @"Arquivos\";
-            Directory.CreateDirectory(filePath);
-
             file = baseUrl + file + ".zip";
-            Channel<byte[]> DataDownload = Channel.CreateUnbounded< byte[]>(); //por limite com base na memoria RAM
+            Channel<byte[]> DataDownload = Channel.CreateUnbounded<byte[]>(); //por limite com base na memoria RAM
             Channel<BsonDocument> DataProcess = Channel.CreateUnbounded<BsonDocument>();
 
             ICollection<Task> downloaders = new List<Task>();
             ICollection<Task> processors = new List<Task>();
             ICollection<Task> importers = new List<Task>();
+            List<byte[]> Chunks = new();
 
-            const int BufferSize = 1 * 500;//1024; // 128KB por leitura
+            const int BufferSize = 1 * 1024; // 128KB por leitura
             byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
 
             HttpResponseMessage response;
@@ -101,27 +99,18 @@ namespace download_descompactacao
                     response = await httpClient.GetAsync(file, HttpCompletionOption.ResponseHeadersRead);
                     response.EnsureSuccessStatusCode();
                     break;
-                } catch (Exception ex)
+                }
+                catch (Exception ex)
                 {
                     Console.WriteLine(ex.Message);
                 }
             }
-
-            await using var zipStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-            using var zipInputStream = new ZipInputStream(zipStream);
-            zipInputStream.IsStreamOwner = false;
-
-            ZipEntry entry;
-            while ((entry = zipInputStream.GetNextEntry()) != null)
+            
+            for (int i = 0; i < 1; i++)
             {
-                if (!entry.IsFile) continue;
-                Console.WriteLine($"Lendo: {entry.Name}");
-                for (int i = 0; i < 1; i++)
-                {
-                    var localRaw = Channel.CreateUnbounded<byte[]>();
-                    downloaders.Add(Downloader(localRaw.Writer));
-                    _ = TailConnector(localRaw.Reader, DataDownload.Writer);
-                }
+                var localRaw = Channel.CreateUnbounded<byte[]>();
+                downloaders.Add(Downloader(localRaw.Writer));
+                _ = TailConnector(localRaw.Reader, DataDownload.Writer);
             }
 
             for (int i = 0; i < 1; i++)
@@ -129,7 +118,7 @@ namespace download_descompactacao
                 processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             }
             //importers.Add(Importer(DataProcess.Reader));
-
+            Console.WriteLine("só esperando");
             await Task.WhenAll(downloaders);
             DataDownload.Writer.Complete();
             await Task.WhenAll(processors);
@@ -147,67 +136,64 @@ namespace download_descompactacao
             - Terá provavelmente apenas 1, para baixar o arquivo inteiro, ou mais para realizar o download em partes 
             (só terá mais se tiver mais recurso disponivel mesmo baixando 3 arquivos simultaneamente)*/
             {
-                int bytesRead;
-                for (int i = 0; i < 10; i++)
-                //while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
-                {
-                    bytesRead = await zipInputStream.ReadAsync(buffer.AsMemory(0, BufferSize));
-                    // Copia apenas os dados lidos em um novo buffer
-                    byte[] chunk = ArrayPool<byte>.Shared.Rent(bytesRead);
-                    Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
+                await using var zipStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                using var zipInputStream = new ZipInputStream(zipStream);
+                zipInputStream.IsStreamOwner = false;
 
-                    // Envia para o canal
-                    await writer.WriteAsync(chunk);
+                ZipEntry entry;
+                while ((entry = zipInputStream.GetNextEntry()) != null)
+                {
+                    if (!entry.IsFile) continue;
+                    Console.WriteLine($"Lendo: {entry.Name}");
+
+                    int bytesRead;
+                    for (int i = 0; i < 30; i++)
+                    //while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
+                    {
+                        bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize);
+                        // Copia apenas os dados lidos em um novo buffer
+                        byte[] chunk = ArrayPool<byte>.Shared.Rent(bytesRead);
+                        Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
+
+                        // Envia para o canal
+                        await writer.WriteAsync(chunk);
+                    }
+                    ArrayPool<byte>.Shared.Return(buffer);
                 }
-                ArrayPool<byte>.Shared.Return(buffer);
             }
 
             async Task TailConnector(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
             {
-                List<byte> buffer = new(); // to hold tail bytes between chunks
-
+                using var tempBuffer = new MemoryStream();
                 await foreach (var chunk in reader.ReadAllAsync())
                 {
-                    // Merge leftover tail + new chunk
-                    Console.WriteLine("Chunk que Veio");
-                    Console.WriteLine(Encoding.Latin1.GetString(chunk));
-                    buffer.AddRange(chunk);
-                    Console.WriteLine("Add Range");
-                    Console.WriteLine(Encoding.Latin1.GetString(buffer.ToArray()) + '\n');
+                    // Tive duas ideias para solucionar o problema (De alocação de memoria desnecessária), e tem mais a do GPT
+                    // A primeira e ter dois bytes, um maior para levar a chunk toda, e uma para o Tail, e mandaria as duas juntas, que seria tratada pelo Processor
+                    // A segunda ideia seria tira a cabeça e o rabo (tail), e ir juntando eles em uma nova Chunk, quando alcançasse o tamanho do BufferSize, mandaria como uma nova Chunk
+                    //Console.WriteLine(Encoding.Latin1.GetString(chunk));
+                    tempBuffer.Write(chunk, 0, chunk.Length);
+                    var data = tempBuffer.GetBuffer();
 
-                    int tailStart = buffer.Count;
-                    for (int i = buffer.Count - 1; i >= 0; i--)
-                    {
-                        if (buffer[i] == (byte)'\n')
-                        {
-                            tailStart = i + 1;
-                            byte[] fullTextChunk = ArrayPool<byte>.Shared.Rent(i + 1);
-                            Buffer.BlockCopy(buffer.ToArray(), 0, fullTextChunk, 0, i + 1);
-                            await writer.WriteAsync(fullTextChunk);
-                            break;
-                        }
-                    }
+                    int newlineIndex = Array.LastIndexOf(data, (byte)'\n', (int)tempBuffer.Length - 1, (int)tempBuffer.Length);
 
-                    // Keep only the unfinished tail
-                    if (tailStart < buffer.Count) 
-                    { 
-                        buffer = buffer.Skip(tailStart).ToList();
-                    } 
-                    else 
+                    if (newlineIndex >= 0)
                     {
-                        buffer.Clear();
+                        int completeLength = newlineIndex + 1;
+                        byte[] fullChunk = ArrayPool<byte>.Shared.Rent(completeLength);
+                        Buffer.BlockCopy(data, 0, fullChunk, 0, completeLength);
+                        await writer.WriteAsync(fullChunk);
+
+                        // Shift tail
+                        int remaining = (int)tempBuffer.Length - completeLength;
+                        tempBuffer.Position = 0;
+                        tempBuffer.Write(data, completeLength, remaining);
+                        tempBuffer.SetLength(remaining);
+                        ArrayPool<byte>.Shared.Return(fullChunk);
                     }
 
                     ArrayPool<byte>.Shared.Return(chunk);
                 }
-
-                // Emit last line if there’s leftover bytes (no trailing newline)
-                if (buffer.Count > 0)
-                {
-                    byte[] line = ArrayPool<byte>.Shared.Rent(buffer.Count);
-                    Buffer.BlockCopy(buffer.ToArray(), 0, line, 0, buffer.Count);
-                    await writer.WriteAsync(line);
-                }
+                
 
                 writer.Complete();
             }
@@ -221,13 +207,12 @@ namespace download_descompactacao
             - E a subtituição das aspas para vazio
             - Provavel de ter mais de 1 para esse processo por arquivo*/
             {
-                filePath += "arquivo";
                 int arquivo = 1;
                 await foreach (var chunk in reader.ReadAllAsync())
                 {
-                    using var fileStream = new FileStream($"{filePath}{arquivo}.txt", FileMode.Create, FileAccess.Write, FileShare.None);
-                    // Escreve o chunk no arquivo
-                    await fileStream.WriteAsync(chunk);
+                    Chunks.Add(chunk);
+                    Console.WriteLine($"Estou gravando {arquivo}");
+                    Console.WriteLine(Encoding.Latin1.GetString(chunk));
                     ArrayPool<byte>.Shared.Return(chunk); // devolve pro pool
                     arquivo++;
                 }

@@ -9,7 +9,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace download_descompactacao
+namespace Import_Service
 {
     public static class ReceitaImporter
     {
