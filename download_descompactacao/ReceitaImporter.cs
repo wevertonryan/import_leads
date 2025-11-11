@@ -78,8 +78,10 @@ namespace download_descompactacao
         - Fará a Chamada dos Produtores e Consumidores 
         - Fará o Controle dinámico dos produtores e consumidores com base nos recursos disponiveis durante a execução (adição ou retiragem)*/
         {
+            string filePath = AppDomain.CurrentDomain.BaseDirectory.Replace(@"download_descompactacao\bin\Debug\net8.0", "") + @"Arquivos\";
+            Directory.CreateDirectory(filePath);
             file = baseUrl + file + ".zip";
-            Channel<byte[]> DataDownload = Channel.CreateUnbounded<byte[]>(); //por limite com base na memoria RAM
+            Channel<byte[]> DataDownload = Channel.CreateUnbounded< byte[]>(); //por limite com base na memoria RAM
             Channel<BsonDocument> DataProcess = Channel.CreateUnbounded<BsonDocument>();
 
             ICollection<Task> downloaders = new List<Task>();
@@ -100,6 +102,7 @@ namespace download_descompactacao
                 } catch (Exception ex)
                 {
                     Console.WriteLine(ex.Message);
+                    return;
                 }
             }
 
@@ -127,7 +130,7 @@ namespace download_descompactacao
                     for(int i = 0; i < 10; i++)
                     //while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
                     {
-                        bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize);
+                        bytesRead = await zipInputStream.ReadAsync(buffer.AsMemory(0, BufferSize));
                         // Copia apenas os dados lidos em um novo buffer
                         byte[] chunk = ArrayPool<byte>.Shared.Rent(bytesRead);
                         Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
@@ -137,11 +140,51 @@ namespace download_descompactacao
                     }
                 }
                 ArrayPool<byte>.Shared.Return(buffer);
-                Console.WriteLine("Passei");
             }
 
-            string filePath = @"C:\Users\0201392421023\Downloads\Teste\";
-            Directory.CreateDirectory(filePath);
+            async Task TailConnector(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
+            {
+                List<byte> buffer = new(); // to hold tail bytes between chunks
+
+                await foreach (var chunk in reader.ReadAllAsync())
+                {
+                    // Merge leftover tail + new chunk
+                    buffer.AddRange(chunk);
+
+                    int lineStart = 0;
+                    for (int i = 0; i < buffer.Count; i++)
+                    {
+                        // Newline byte (LF = 10)
+                        if (buffer[i] == (byte)'\n')
+                        {
+                            int lineLength = i - lineStart + 1;
+                            byte[] line = ArrayPool<byte>.Shared.Rent(lineLength);
+                            Buffer.BlockCopy(buffer.ToArray(), lineStart, line, 0, lineLength);
+
+                            await writer.WriteAsync(line);
+                            lineStart = i + 1;
+                        }
+                    }
+
+                    // Keep only the unfinished tail
+                    if (lineStart < buffer.Count)
+                        buffer = buffer.Skip(lineStart).ToList();
+                    else
+                        buffer.Clear();
+
+                    ArrayPool<byte>.Shared.Return(chunk);
+                }
+
+                // Emit last line if there’s leftover bytes (no trailing newline)
+                if (buffer.Count > 0)
+                {
+                    byte[] line = ArrayPool<byte>.Shared.Rent(buffer.Count);
+                    Buffer.BlockCopy(buffer.ToArray(), 0, line, 0, buffer.Count);
+                    await writer.WriteAsync(line);
+                }
+
+                writer.Complete();
+            }
 
             async Task Processor(ChannelReader<byte[]> reader, ChannelWriter<BsonDocument> writer)
             /* [Processor]
@@ -156,7 +199,7 @@ namespace download_descompactacao
                 int arquivo = 1;
                 await foreach (var chunk in reader.ReadAllAsync())
                 {
-                    var fileStream = new FileStream($"{ filePath }{arquivo}.txt", FileMode.Create, FileAccess.Write, FileShare.None);
+                    using var fileStream = new FileStream($"{ filePath }{arquivo}.txt", FileMode.Create, FileAccess.Write, FileShare.None);
                     // Escreve o chunk no arquivo
                     await fileStream.WriteAsync(chunk);
                     ArrayPool<byte>.Shared.Return(chunk); // devolve pro pool
@@ -170,11 +213,19 @@ namespace download_descompactacao
             - Irá realizar a importação dos Bson Document para o MongoDB
             - Provavel que terá mais de um para esse processo*/
             {
-
+                
+            }
+            for(int i = 0; i < 1; i++)
+            {
+                var localRaw = Channel.CreateUnbounded<byte[]>();
+                downloaders.Add(Downloader(localRaw.Writer));
+                _ = TailConnector(localRaw.Reader, DataDownload.Writer);
             }
 
-            downloaders.Add(Downloader(DataDownload.Writer));
-            processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
+            for (int i = 0; i < 3; i++)
+            {
+                processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
+            }
             //importers.Add(Importer(DataProcess.Reader));
 
             await Task.WhenAll(downloaders);
