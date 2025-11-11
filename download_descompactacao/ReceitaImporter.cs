@@ -78,8 +78,10 @@ namespace download_descompactacao
         - Fará a Chamada dos Produtores e Consumidores 
         - Fará o Controle dinámico dos produtores e consumidores com base nos recursos disponiveis durante a execução (adição ou retiragem)*/
         {
+            //vou tirar essas duas linhas, mas acho que ainda vou criar alguma coisa por conta do documento de progresso
             string filePath = AppDomain.CurrentDomain.BaseDirectory.Replace(@"download_descompactacao\bin\Debug\net8.0", "") + @"Arquivos\";
             Directory.CreateDirectory(filePath);
+
             file = baseUrl + file + ".zip";
             Channel<byte[]> DataDownload = Channel.CreateUnbounded< byte[]>(); //por limite com base na memoria RAM
             Channel<BsonDocument> DataProcess = Channel.CreateUnbounded<BsonDocument>();
@@ -102,13 +104,39 @@ namespace download_descompactacao
                 } catch (Exception ex)
                 {
                     Console.WriteLine(ex.Message);
-                    return;
                 }
             }
 
             await using var zipStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
             using var zipInputStream = new ZipInputStream(zipStream);
             zipInputStream.IsStreamOwner = false;
+
+            ZipEntry entry;
+            while ((entry = zipInputStream.GetNextEntry()) != null)
+            {
+                if (!entry.IsFile) continue;
+                Console.WriteLine($"Lendo: {entry.Name}");
+                for (int i = 0; i < 1; i++)
+                {
+                    var localRaw = Channel.CreateUnbounded<byte[]>();
+                    downloaders.Add(Downloader(localRaw.Writer));
+                    _ = TailConnector(localRaw.Reader, DataDownload.Writer);
+                }
+            }
+
+            for (int i = 0; i < 3; i++)
+            {
+                processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
+            }
+            //importers.Add(Importer(DataProcess.Reader));
+
+            await Task.WhenAll(downloaders);
+            DataDownload.Writer.Complete();
+            await Task.WhenAll(processors);
+            DataProcess.Writer.Complete();
+            //await Task.WhenAll(importers);
+
+            Console.WriteLine($"Arquivo Importado com Sucesso!");
 
             async Task Downloader(ChannelWriter<byte[]> writer)
             /* [Downloader]
@@ -119,25 +147,17 @@ namespace download_descompactacao
             - Terá provavelmente apenas 1, para baixar o arquivo inteiro, ou mais para realizar o download em partes 
             (só terá mais se tiver mais recurso disponivel mesmo baixando 3 arquivos simultaneamente)*/
             {
-                ZipEntry entry;
-                while ((entry = zipInputStream.GetNextEntry()) != null)
+                int bytesRead;
+                for (int i = 0; i < 10; i++)
+                //while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
                 {
-                    if (!entry.IsFile) continue;
+                    bytesRead = await zipInputStream.ReadAsync(buffer.AsMemory(0, BufferSize));
+                    // Copia apenas os dados lidos em um novo buffer
+                    byte[] chunk = ArrayPool<byte>.Shared.Rent(bytesRead);
+                    Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
 
-                    Console.WriteLine($"Lendo: {entry.Name}");
-
-                    int bytesRead;
-                    for(int i = 0; i < 10; i++)
-                    //while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
-                    {
-                        bytesRead = await zipInputStream.ReadAsync(buffer.AsMemory(0, BufferSize));
-                        // Copia apenas os dados lidos em um novo buffer
-                        byte[] chunk = ArrayPool<byte>.Shared.Rent(bytesRead);
-                        Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
-
-                        // Envia para o canal
-                        await writer.WriteAsync(chunk);
-                    }
+                    // Envia para o canal
+                    await writer.WriteAsync(chunk);
                 }
                 ArrayPool<byte>.Shared.Return(buffer);
             }
@@ -150,6 +170,8 @@ namespace download_descompactacao
                 {
                     // Merge leftover tail + new chunk
                     buffer.AddRange(chunk);
+                    Console.WriteLine(Encoding.Latin1.GetString(buffer.ToArray()));
+                    Console.WriteLine("");
 
                     int lineStart = 0;
                     for (int i = 0; i < buffer.Count; i++)
@@ -197,14 +219,14 @@ namespace download_descompactacao
             {
                 filePath += "arquivo";
                 int arquivo = 1;
-                await foreach (var chunk in reader.ReadAllAsync())
+                /*await foreach (var chunk in reader.ReadAllAsync())
                 {
-                    using var fileStream = new FileStream($"{ filePath }{arquivo}.txt", FileMode.Create, FileAccess.Write, FileShare.None);
+                    using var fileStream = new FileStream($"{filePath}{arquivo}.txt", FileMode.Create, FileAccess.Write, FileShare.None);
                     // Escreve o chunk no arquivo
                     await fileStream.WriteAsync(chunk);
                     ArrayPool<byte>.Shared.Return(chunk); // devolve pro pool
                     arquivo++;
-                }
+                }*/
             }
 
             async Task Importer(ChannelReader<BsonDocument> reader)
@@ -213,28 +235,8 @@ namespace download_descompactacao
             - Irá realizar a importação dos Bson Document para o MongoDB
             - Provavel que terá mais de um para esse processo*/
             {
-                
-            }
-            for(int i = 0; i < 1; i++)
-            {
-                var localRaw = Channel.CreateUnbounded<byte[]>();
-                downloaders.Add(Downloader(localRaw.Writer));
-                _ = TailConnector(localRaw.Reader, DataDownload.Writer);
-            }
 
-            for (int i = 0; i < 3; i++)
-            {
-                processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             }
-            //importers.Add(Importer(DataProcess.Reader));
-
-            await Task.WhenAll(downloaders);
-            DataDownload.Writer.Complete();
-            await Task.WhenAll(processors);
-            DataProcess.Writer.Complete();
-            //await Task.WhenAll(importers);
-
-            Console.WriteLine($"Arquivo Importado com Sucesso!");
         }
 
         // PRODUTORES E CONSUMIDORES
