@@ -12,6 +12,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Import_Service
 {
@@ -40,10 +41,22 @@ namespace Import_Service
             Timeout = TimeSpan.FromMinutes(10),
             DefaultRequestVersion = HttpVersion.Version20 // Melhor desempenho HTTP/2
         };
+        private static readonly Encoding Latin1Encoding = Encoding.GetEncoding("ISO-8859-1");
 
         private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-09/";
-        private static readonly Encoding Latin1Encoding = Encoding.GetEncoding("ISO-8859-1");
-        public record ChunkData(byte[] Buffer, int Length);
+        private static readonly Dictionary<string, string[]> headers = new()
+        {
+            ["Cnaes"] = ["codigo", "descricao"],
+            ["Empresas"] = ["cnpjBase", "razaoSocial", "naturezaJuridica", "qualificacaoResponsavel", "capitalSocial", "porteEmpresa", "enteFederativo"],
+            ["Estabelecimentos"] = ["cnpjBase", "cnpjOrdem", "cnpjDV", "matrizFilial", "nomeFantasia", "situacaoCadastral", "dataSituacaoCadastral", "motivoSituacaoCadastral", "cidadeExterior", "pais", "dataInicioAtividade", "cnaePrincipal", "cnaeSecundario", "tipoLogradouro", "logradouro", "numero", "complemento", "bairro", "CEP", "UF", "municipio", "ddd1", "telefone1", "ddd2", "telefone2", "dddFAX", "FAX", "correioEletronico", "situacaoEspecial", "dataSituacaoEspecial"],
+            ["Motivos"] = ["codigo", "descricao"],
+            ["Municipios"] = ["codigo", "descricao"],
+            ["Naturezas"] = ["codigo", "descricao"],
+            ["Paises"] = ["codigo", "descricao"],
+            ["Qualificacoes"] = ["codigo", "descricao"],
+            ["Simples"] = ["cnpjBase", "opcaoDoSimples", "dataOpcaoDoSimples", "dataExclusaoDoSimples", "MEI", "dataOpcaoMEI", "dataExclusaoMei"],
+            ["Socios"] = ["cnpjBase", "identificadoSocio", "nomeSocio", "cnpjCpf", "qualificaoSocio", "dataEntradaSociedade", "pais", "representanteLegal", "nomeRepresentante", "qualificacaoResponsavel", "faixaEtaria"]
+        };
 
         /* CÓDIGO (Métodos Públicos)
            * Start(): Começa do Zero ou Continua de onde parou
@@ -65,21 +78,21 @@ namespace Import_Service
                 return;
             }*/
             try{
-                await ProcessFile("Cnaes");
+                await ProcessFile("Empresas0");
             } catch(Exception e){
                 Console.WriteLine(e.Message);
             }
             Console.WriteLine("# ReceitaImporter Finalizado #");
         }
 
-        private static async Task ProcessFile(string file)
+        private static async Task ProcessFile(string fileName)
         /* [ProcessDocument]
         - Método Responsavel pelo processo completo (download -> processamento -> importação) de um único
         - Também é onde ficarão os Canais (Channel)
         - Fará a Chamada dos Produtores e Consumidores 
         - Fará o Controle dinámico dos produtores e consumidores com base nos recursos disponiveis durante a execução (adição ou retiragem)*/
         {
-            file = baseUrl + file + ".zip";
+            var file = baseUrl + fileName + ".zip";
             Channel<byte[]> DataDownload = Channel.CreateUnbounded<byte[]>(); //por limite com base na memoria RAM
             Channel<BsonDocument> DataProcess = Channel.CreateUnbounded<BsonDocument>();
 
@@ -87,8 +100,9 @@ namespace Import_Service
             ICollection<Task> processors = new List<Task>();
             ICollection<Task> importers = new List<Task>();
             List<byte[]> Chunks = new();
+            const int batchSize = 5000;
 
-            const int BufferSize = 1 * 1024; // 128KB por leitura
+            const int BufferSize = 128 * 1024; // 128KB por leitura
             byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
 
             HttpResponseMessage response;
@@ -110,20 +124,28 @@ namespace Import_Service
             {
                 var localRaw = Channel.CreateUnbounded<byte[]>();
                 downloaders.Add(Downloader(localRaw.Writer));
-                _ = TailConnector(localRaw.Reader, DataDownload.Writer);
+                _ = BrokenLineRepairer(localRaw.Reader, DataDownload.Writer);
             }
 
-            for (int i = 0; i < 1; i++)
+            fileName = Regex.Replace(fileName, @"[0-9]", "");
+            var thisHeaderCollection = headers[fileName];
+            for (int i = 0; i < 3; i++)
             {
                 processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             }
-            //importers.Add(Importer(DataProcess.Reader));
+
+            var opts = new InsertManyOptions { IsOrdered = false };
+            var collection = mongoDatabase.GetCollection<BsonDocument>(fileName);
+            for (int i = 0; i < 3; i++)
+            {
+                importers.Add(Importer(DataProcess.Reader));
+            }
             Console.WriteLine("só esperando");
             await Task.WhenAll(downloaders);
             DataDownload.Writer.Complete();
             await Task.WhenAll(processors);
             DataProcess.Writer.Complete();
-            //await Task.WhenAll(importers);
+            await Task.WhenAll(importers);
 
             Console.WriteLine($"Arquivo Importado com Sucesso!");
 
@@ -147,10 +169,8 @@ namespace Import_Service
                     Console.WriteLine($"Lendo: {entry.Name}");
 
                     int bytesRead;
-                    for (int i = 0; i < 30; i++)
-                    //while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
+                    while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
                     {
-                        bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize);
                         // Copia apenas os dados lidos em um novo buffer
                         byte[] chunk = ArrayPool<byte>.Shared.Rent(bytesRead);
                         Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
@@ -162,39 +182,53 @@ namespace Import_Service
                 }
             }
 
-            async Task TailConnector(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
+            // A segunda ideia seria tira a cabeça e o rabo (tail), e ir juntando eles em uma nova Chunk, quando alcançasse o tamanho do BufferSize, mandaria como uma nova Chunk
+            // fazer um segundo teste com a primeira ideia
+            async Task BrokenLineRepairer(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
             {
-                using var tempBuffer = new MemoryStream();
+                //using var brokenLineBuffer = new MemoryStream();
                 await foreach (var chunk in reader.ReadAllAsync())
                 {
                     // Tive duas ideias para solucionar o problema (De alocação de memoria desnecessária), e tem mais a do GPT
                     // A primeira e ter dois bytes, um maior para levar a chunk toda, e uma para o Tail, e mandaria as duas juntas, que seria tratada pelo Processor
-                    // A segunda ideia seria tira a cabeça e o rabo (tail), e ir juntando eles em uma nova Chunk, quando alcançasse o tamanho do BufferSize, mandaria como uma nova Chunk
                     //Console.WriteLine(Encoding.Latin1.GetString(chunk));
-                    tempBuffer.Write(chunk, 0, chunk.Length);
-                    var data = tempBuffer.GetBuffer();
+                    int endFirstLineIndex = Array.IndexOf(chunk, (byte)'\n');
+                    int endChunkIndex = Array.LastIndexOf(chunk, (byte)'\n');
+                    int completeLength = endChunkIndex - endFirstLineIndex;
 
-                    int newlineIndex = Array.LastIndexOf(data, (byte)'\n', (int)tempBuffer.Length - 1, (int)tempBuffer.Length);
-
-                    if (newlineIndex >= 0)
-                    {
-                        int completeLength = newlineIndex + 1;
-                        byte[] fullChunk = ArrayPool<byte>.Shared.Rent(completeLength);
-                        Buffer.BlockCopy(data, 0, fullChunk, 0, completeLength);
-                        await writer.WriteAsync(fullChunk);
-
-                        // Shift tail
-                        int remaining = (int)tempBuffer.Length - completeLength;
-                        tempBuffer.Position = 0;
-                        tempBuffer.Write(data, completeLength, remaining);
-                        tempBuffer.SetLength(remaining);
-                        ArrayPool<byte>.Shared.Return(fullChunk);
+                    if (endFirstLineIndex == -1 || endChunkIndex == -1 || endChunkIndex <= endFirstLineIndex) { 
+                        continue;
                     }
+                    byte[] safeChunk = ArrayPool<byte>.Shared.Rent(completeLength);
+                    //Solução Temporária
+                    safeChunk.AsSpan().Clear();
+                    //Console.WriteLine("Tamanho Completo: " + completeLength);
+                    //Console.WriteLine("Safe Chunk Antes: " + safeChunk.Length + "\n");
+                    
+                    Buffer.BlockCopy(chunk, endFirstLineIndex + 1, safeChunk, 0, completeLength);
+                    await writer.WriteAsync(safeChunk);
 
+                    //Console.WriteLine("Chunk normal: " + Encoding.Latin1.GetString(chunk));
+                    //Console.WriteLine("Safe Chunk: " + Encoding.Latin1.GetString(safeChunk) + "\n");
+
+                    /*
+                    //posso deixar write async para maior eficiencia, mas vou ter que modificar algumas coisas
+                    int firstLineSize = endFirstLineIndex + 1;
+                    int lastLineSize = chunk.Length - endChunkIndex;
+
+                    if (BufferSize > (int)brokenLineBuffer.Length + firstLineSize + lastLineSize)
+                    {
+                        var brokenLineChunk = ArrayPool<byte>.Shared.Rent((int)brokenLineBuffer.Length);
+                        Buffer.BlockCopy(brokenLineBuffer.GetBuffer(), 0, brokenLineChunk, 0, (int)brokenLineBuffer.Length);
+                        await writer.WriteAsync(brokenLineBuffer.GetBuffer());
+                        brokenLineBuffer.Position = 0;
+                        brokenLineBuffer.SetLength(0);
+                    }
+                    brokenLineBuffer.Write(chunk, 0, firstLineSize);
+                    brokenLineBuffer.Write(chunk, endChunkIndex + 1, lastLineSize);
+                    */
                     ArrayPool<byte>.Shared.Return(chunk);
                 }
-                
-
                 writer.Complete();
             }
 
@@ -207,14 +241,40 @@ namespace Import_Service
             - E a subtituição das aspas para vazio
             - Provavel de ter mais de 1 para esse processo por arquivo*/
             {
-                int arquivo = 1;
                 await foreach (var chunk in reader.ReadAllAsync())
                 {
-                    Chunks.Add(chunk);
-                    Console.WriteLine($"Estou gravando {arquivo}");
-                    Console.WriteLine(Encoding.Latin1.GetString(chunk));
-                    ArrayPool<byte>.Shared.Return(chunk); // devolve pro pool
-                    arquivo++;
+                    //Chunks.Add(chunk);
+                    //Console.WriteLine(Encoding.Latin1.GetString(chunk));
+                    // devolve pro pool
+
+                    int start = 0;
+                    for (int i = 0; i < chunk.Length; i++)
+                    {
+                        if (chunk[i] == (byte)'\n')
+                        {
+                            int length = i - start + 1;
+                            string line = Latin1Encoding.GetString(chunk, start, length).Trim();
+                            var parts = line.Split(';');
+
+                            // Example transformation
+                            var doc = new BsonDocument();
+                            try
+                            {
+                                for (int j = 0; j < thisHeaderCollection.Length; j++)
+                                {
+                                    doc[thisHeaderCollection[j]] = parts[j].Trim('\"');
+                                }
+                                await writer.WriteAsync(doc);
+                            } catch (IndexOutOfRangeException ex)
+                            {
+                                //Console.WriteLine($"Part: {parts.Length}\nLine: {line}");
+                                //Console.WriteLine("Chunk: " + Encoding.Latin1.GetString(chunk));
+                                //Console.WriteLine("");
+                            }
+                            start = i + 1;
+                        }
+                    }
+                    ArrayPool<byte>.Shared.Return(chunk);
                 }
             }
 
@@ -224,7 +284,21 @@ namespace Import_Service
             - Irá realizar a importação dos Bson Document para o MongoDB
             - Provavel que terá mais de um para esse processo*/
             {
+                List<BsonDocument> batch = new();
 
+                await foreach (var doc in reader.ReadAllAsync())
+                {
+                    batch.Add(doc);
+                    if (batch.Count >= batchSize)
+                    {
+                        //Console.WriteLine("Vou inserir");
+                        await collection.InsertManyAsync(batch, opts);
+                        batch.Clear();
+                    }
+                }
+
+                if (batch.Count > 0)
+                    await collection.InsertManyAsync(batch);
             }
         }
 
