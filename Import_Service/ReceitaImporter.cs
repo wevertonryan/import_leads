@@ -77,11 +77,16 @@ namespace Import_Service
             {
                 return;
             }*/
+            var processFiles = new List<Task>();
             try{
-                await ProcessFile("Empresas0");
+
+                processFiles.Add(ProcessFile("Empresas0"));
+                processFiles.Add(ProcessFile("Paises"));
+                processFiles.Add(ProcessFile("Simples"));
             } catch(Exception e){
                 Console.WriteLine(e.Message);
             }
+            await Task.WhenAll(processFiles);
             Console.WriteLine("# ReceitaImporter Finalizado #");
         }
 
@@ -136,7 +141,7 @@ namespace Import_Service
 
             var opts = new InsertManyOptions { IsOrdered = false };
             var collection = mongoDatabase.GetCollection<BsonDocument>(fileName);
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 2; i++)
             {
                 importers.Add(Importer(DataProcess.Reader));
             }
@@ -147,7 +152,7 @@ namespace Import_Service
             DataProcess.Writer.Complete();
             await Task.WhenAll(importers);
 
-            Console.WriteLine($"Arquivo Importado com Sucesso!");
+            Console.WriteLine($"Arquivo {fileName} Importado com Sucesso!");
 
             async Task Downloader(ChannelWriter<byte[]> writer)
             /* [Downloader]
@@ -186,7 +191,8 @@ namespace Import_Service
             // fazer um segundo teste com a primeira ideia
             async Task BrokenLineRepairer(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
             {
-                //using var brokenLineBuffer = new MemoryStream();
+                using var brokenLine = new MemoryStream();
+                using var connectedLinesBuffer = new MemoryStream(BufferSize);
                 await foreach (var chunk in reader.ReadAllAsync())
                 {
                     // Tive duas ideias para solucionar o problema (De alocação de memoria desnecessária), e tem mais a do GPT
@@ -204,29 +210,33 @@ namespace Import_Service
                     safeChunk.AsSpan().Clear();
                     //Console.WriteLine("Tamanho Completo: " + completeLength);
                     //Console.WriteLine("Safe Chunk Antes: " + safeChunk.Length + "\n");
-                    
-                    Buffer.BlockCopy(chunk, endFirstLineIndex + 1, safeChunk, 0, completeLength);
+
+                    chunk.AsSpan(endFirstLineIndex + 1, completeLength).CopyTo(safeChunk);
                     await writer.WriteAsync(safeChunk);
 
                     //Console.WriteLine("Chunk normal: " + Encoding.Latin1.GetString(chunk));
                     //Console.WriteLine("Safe Chunk: " + Encoding.Latin1.GetString(safeChunk) + "\n");
 
-                    /*
+                    
                     //posso deixar write async para maior eficiencia, mas vou ter que modificar algumas coisas
                     int firstLineSize = endFirstLineIndex + 1;
-                    int lastLineSize = chunk.Length - endChunkIndex;
-
-                    if (BufferSize > (int)brokenLineBuffer.Length + firstLineSize + lastLineSize)
+                    int lastLineSize = chunk.Length - (endChunkIndex + 1);
+                    brokenLine.Write(chunk, 0, firstLineSize);
+                    if (BufferSize < (int)connectedLinesBuffer.Length + (int)brokenLine.Length)
                     {
-                        var brokenLineChunk = ArrayPool<byte>.Shared.Rent((int)brokenLineBuffer.Length);
-                        Buffer.BlockCopy(brokenLineBuffer.GetBuffer(), 0, brokenLineChunk, 0, (int)brokenLineBuffer.Length);
-                        await writer.WriteAsync(brokenLineBuffer.GetBuffer());
-                        brokenLineBuffer.Position = 0;
-                        brokenLineBuffer.SetLength(0);
+                        var connectedLineChunk = ArrayPool<byte>.Shared.Rent((int)connectedLinesBuffer.Length);
+                        connectedLineChunk.AsSpan().Clear();
+                        connectedLinesBuffer.ToArray().AsSpan(0, (int)connectedLinesBuffer.Length).CopyTo(connectedLineChunk);
+                        await writer.WriteAsync(connectedLineChunk);
+                        //Console.WriteLine("Chunk BrokenLines: " + Encoding.Latin1.GetString(connectedLineChunk));
+                        connectedLinesBuffer.Position = 0;
+                        connectedLinesBuffer.SetLength(0);
                     }
-                    brokenLineBuffer.Write(chunk, 0, firstLineSize);
-                    brokenLineBuffer.Write(chunk, endChunkIndex + 1, lastLineSize);
-                    */
+                    connectedLinesBuffer.Write(brokenLine.ToArray());
+                    brokenLine.Position = 0;
+                    brokenLine.Write(chunk, endChunkIndex + 1, lastLineSize);
+                    brokenLine.SetLength(lastLineSize);
+
                     ArrayPool<byte>.Shared.Return(chunk);
                 }
                 writer.Complete();
