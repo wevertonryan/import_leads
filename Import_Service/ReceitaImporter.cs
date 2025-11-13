@@ -31,8 +31,8 @@ namespace Import_Service
             ["DatabaseName"] = "LeadSearch",
             ["ConnectionString"] = "mongodb://localhost:27017"
         };
-        private static readonly SemaphoreSlim downloadSemaphore = new(2);
-        private static readonly string[] filesArray = ["Cnaes", "Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8","Empresas9","Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8","Estabelecimentos9","Motivos","Municipios","Naturezas","Paises","Qualificacoes","Simples","Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7","Socios8","Socios9"];
+        private static readonly SemaphoreSlim downloadSemaphore = new(3);
+        private static readonly string[] filesArray = ["Cnaes", /*"Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8","Empresas9","Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8","Estabelecimentos9", */"Motivos","Municipios","Naturezas","Paises","Qualificacoes","Simples",/*"Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7","Socios8",*/"Socios9"];
         //Conexão com o MongoDB
         private static readonly IMongoDatabase mongoDatabase = new MongoClient(ConnectionDatabaseConfig["ConnectionString"]).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
         private static readonly HttpClient httpClient = new(new HttpClientHandler
@@ -79,16 +79,8 @@ namespace Import_Service
             {
                 return;
             }*/
+            await DropAllCollectionsAsync();
             var processFiles = new List<Task>();
-            /*foreach(var fileName in filesArray){
-                await downloadSemaphore.WaitAsync();
-                try{
-                    processFiles.Add(ProcessFile(fileName));
-                } catch(Exception e){
-                    Console.WriteLine(e.Message);
-                }
-            }*/
-            
             var sw = new Stopwatch();
             sw.Start();
             foreach(var fileName in filesArray){
@@ -121,11 +113,14 @@ namespace Import_Service
         - Método Responsavel pelo processo completo (download -> processamento -> importação) de um único
         - Também é onde ficarão os Canais (Channel)
         - Fará a Chamada dos Produtores e Consumidores 
-        - Fará o Controle dinámico dos produtores e consumidores com base nos recursos disponiveis durante a execução (adição ou retiragem)*/
+        - Fará o Controle dinámico dos produtores e consumidores com base nos recursos disponiveis durante a execução (adição ou retiragem)
+        - Adicionar/Retirar trabalhadores com base na necessidade, se quem estiver causando o gargalo for o banco adicionar mais no banco*/
         {
             var file = baseUrl + fileName + ".zip";
-            Channel<byte[]> DataDownload = Channel.CreateUnbounded<byte[]>(); //por limite com base na memoria RAM
-            Channel<BsonDocument> DataProcess = Channel.CreateUnbounded<BsonDocument>();
+            var channelOptions = new BoundedChannelOptions(150) { FullMode = BoundedChannelFullMode.Wait }; //quando encher, começar a escrever no disco para não atrapalhar o download, ou alguma outra etapa
+
+            var DataDownload = Channel.CreateBounded<byte[]>(channelOptions);
+            var DataProcess = Channel.CreateBounded<BsonDocument>(channelOptions);
 
             ICollection<Task> downloaders = new List<Task>();
             ICollection<Task> processors = new List<Task>();
@@ -155,25 +150,24 @@ namespace Import_Service
             
             for (int i = 0; i < 1; i++)
             {
-                var localRaw = Channel.CreateUnbounded<byte[]>();
-                downloaders.Add(Downloader(localRaw.Writer));
-                _ = BrokenLineRepairer(localRaw.Reader, DataDownload.Writer);
+                var localRaw = Channel.CreateBounded<byte[]>(channelOptions);
+                _ = Downloader(localRaw.Writer);
+                downloaders.Add(BrokenLineRepairer(localRaw.Reader, DataDownload.Writer));
             }
 
             fileName = Regex.Replace(fileName, @"[0-9]", "");
             var thisHeaderCollection = headers[fileName];
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < 8; i++)
             {
                 processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             }
 
             var opts = new InsertManyOptions { IsOrdered = false };
             var collection = mongoDatabase.GetCollection<BsonDocument>(fileName);
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 2; i++)
             {
                 importers.Add(Importer(DataProcess.Reader));
             }
-            Console.WriteLine("só esperando");
             await Task.WhenAll(downloaders);
             DataDownload.Writer.Complete();
             await Task.WhenAll(processors);
@@ -206,20 +200,22 @@ namespace Import_Service
                     {
                         // Copia apenas os dados lidos em um novo buffer
                         byte[] chunk = ArrayPool<byte>.Shared.Rent(bytesRead);
-                        Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
+                        chunk.AsSpan().Clear();
+                        buffer.AsSpan(0, bytesRead).CopyTo(chunk);
 
                         // Envia para o canal
                         await writer.WriteAsync(chunk);
                     }
                     ArrayPool<byte>.Shared.Return(buffer);
                 }
+                writer.Complete();
             }
 
             // A segunda ideia seria tira a cabeça e o rabo (tail), e ir juntando eles em uma nova Chunk, quando alcançasse o tamanho do BufferSize, mandaria como uma nova Chunk
             // fazer um segundo teste com a primeira ideia
             async Task BrokenLineRepairer(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
             {
-                using var brokenLine = new MemoryStream();
+                using var brokenLineBuffer = new MemoryStream();
                 using var connectedLinesBuffer = new MemoryStream(BufferSize);
                 await foreach (var chunk in reader.ReadAllAsync())
                 {
@@ -230,7 +226,8 @@ namespace Import_Service
                     int endChunkIndex = Array.LastIndexOf(chunk, (byte)'\n');
                     int completeLength = endChunkIndex - endFirstLineIndex;
 
-                    if (endFirstLineIndex == -1 || endChunkIndex == -1 || endChunkIndex <= endFirstLineIndex) { 
+                    if (endFirstLineIndex == -1 || endChunkIndex == -1 || endChunkIndex <= endFirstLineIndex) {
+                        Console.WriteLine("Chunk Line Error");
                         continue;
                     }
                     byte[] safeChunk = ArrayPool<byte>.Shared.Rent(completeLength);
@@ -249,8 +246,8 @@ namespace Import_Service
                     //posso deixar write async para maior eficiencia, mas vou ter que modificar algumas coisas
                     int firstLineSize = endFirstLineIndex + 1;
                     int lastLineSize = chunk.Length - (endChunkIndex + 1);
-                    brokenLine.Write(chunk, 0, firstLineSize);
-                    if (BufferSize < (int)connectedLinesBuffer.Length + (int)brokenLine.Length)
+                    brokenLineBuffer.Write(chunk, 0, firstLineSize);
+                    if (BufferSize < (int)connectedLinesBuffer.Length + (int)brokenLineBuffer.Length)
                     {
                         var connectedLineChunk = ArrayPool<byte>.Shared.Rent((int)connectedLinesBuffer.Length);
                         connectedLineChunk.AsSpan().Clear();
@@ -260,14 +257,29 @@ namespace Import_Service
                         connectedLinesBuffer.Position = 0;
                         connectedLinesBuffer.SetLength(0);
                     }
-                    connectedLinesBuffer.Write(brokenLine.ToArray());
-                    brokenLine.Position = 0;
-                    brokenLine.Write(chunk, endChunkIndex + 1, lastLineSize);
-                    brokenLine.SetLength(lastLineSize);
+                    if (brokenLineBuffer.ToArray()[^1] == (byte)'\n')
+                    {
+                        connectedLinesBuffer.Write(brokenLineBuffer.ToArray());
+                    }
+                    else
+                    {
+                        Console.WriteLine("Tem parada errada aqui");
+                    }
+                    brokenLineBuffer.Position = 0;
+                    brokenLineBuffer.Write(chunk, endChunkIndex + 1, lastLineSize);
+                    brokenLineBuffer.SetLength(lastLineSize);
 
                     ArrayPool<byte>.Shared.Return(chunk);
                 }
-                writer.Complete();
+                if(connectedLinesBuffer.Length > 0){
+                    var connectedLineChunk = ArrayPool<byte>.Shared.Rent((int)connectedLinesBuffer.Length);
+                    connectedLineChunk.AsSpan().Clear();
+                    connectedLinesBuffer.ToArray().AsSpan(0, (int)connectedLinesBuffer.Length).CopyTo(connectedLineChunk);
+                    await writer.WriteAsync(connectedLineChunk);
+                    //Console.WriteLine("Chunk BrokenLines: " + Encoding.Latin1.GetString(connectedLineChunk));
+                    connectedLinesBuffer.Position = 0;
+                    connectedLinesBuffer.SetLength(0);
+                }
             }
 
             async Task Processor(ChannelReader<byte[]> reader, ChannelWriter<BsonDocument> writer)
@@ -303,11 +315,11 @@ namespace Import_Service
                                     doc[thisHeaderCollection[j]] = parts[j].Trim('\"');
                                 }
                                 await writer.WriteAsync(doc);
-                            } catch (IndexOutOfRangeException ex)
+                            } catch (Exception ex)
                             {
-                                //Console.WriteLine($"Part: {parts.Length}\nLine: {line}");
+                                Console.WriteLine($"Line: {line}");
                                 //Console.WriteLine("Chunk: " + Encoding.Latin1.GetString(chunk));
-                                //Console.WriteLine("");
+                                //Console.WriteLine(ex.Message);
                             }
                             start = i + 1;
                         }
@@ -340,7 +352,27 @@ namespace Import_Service
             }
         }
 
-        // PRODUTORES E CONSUMIDORES
+        private static async Task DropAllCollectionsAsync()
+        {
+            Console.WriteLine("|=====| INICIANDO LIMPEZA DO BANCO DE DADOS |=====|");
+            var collectionNamesCursor = await mongoDatabase.ListCollectionNamesAsync();
+            var collectionNames = await collectionNamesCursor.ToListAsync();
+
+            if (!collectionNames.Any())
+            {
+                Console.WriteLine("Nenhuma coleção encontrada para apagar.");
+            }
+            else
+            {
+                foreach (var collectionName in collectionNames)
+                {
+                    Console.WriteLine($" - Apagando coleção: {collectionName}");
+                    await mongoDatabase.DropCollectionAsync(collectionName);
+                }
+            }
+            Console.WriteLine("|=====| LIMPEZA DO BANCO DE DADOS CONCLUÍDA |=====|");
+            Console.WriteLine();
+        }
 
         // CheckConnection
 
