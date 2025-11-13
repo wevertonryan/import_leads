@@ -31,6 +31,8 @@ namespace Import_Service
             ["DatabaseName"] = "LeadSearch",
             ["ConnectionString"] = "mongodb://localhost:27017"
         };
+        private static readonly SemaphoreSlim downloadSemaphore = new(2);
+        private static readonly string[] filesArray = ["Cnaes", "Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8","Empresas9","Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8","Estabelecimentos9","Motivos","Municipios","Naturezas","Paises","Qualificacoes","Simples","Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7","Socios8","Socios9"];
         //Conexão com o MongoDB
         private static readonly IMongoDatabase mongoDatabase = new MongoClient(ConnectionDatabaseConfig["ConnectionString"]).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
         private static readonly HttpClient httpClient = new(new HttpClientHandler
@@ -78,16 +80,40 @@ namespace Import_Service
                 return;
             }*/
             var processFiles = new List<Task>();
-            try{
-
-                processFiles.Add(ProcessFile("Empresas0"));
-                processFiles.Add(ProcessFile("Paises"));
-                processFiles.Add(ProcessFile("Simples"));
-            } catch(Exception e){
-                Console.WriteLine(e.Message);
+            /*foreach(var fileName in filesArray){
+                await downloadSemaphore.WaitAsync();
+                try{
+                    processFiles.Add(ProcessFile(fileName));
+                } catch(Exception e){
+                    Console.WriteLine(e.Message);
+                }
+            }*/
+            
+            var sw = new Stopwatch();
+            sw.Start();
+            foreach(var fileName in filesArray){
+                await downloadSemaphore.WaitAsync();
+                processFiles.Add(Task.Run(async () =>
+                {
+                    try
+                    {
+                        await ProcessFile(fileName);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Erro ao processar {fileName}: {ex.Message}");
+                    }
+                    finally
+                    {
+                        downloadSemaphore.Release();
+                    }
+                }));
             }
+
             await Task.WhenAll(processFiles);
+            sw.Stop();
             Console.WriteLine("# ReceitaImporter Finalizado #");
+            Console.WriteLine($"Tempo Decorrido: {sw.Elapsed.Hours}h {sw.Elapsed.Minutes}m {sw.Elapsed.Seconds}s {sw.Elapsed.Milliseconds}ms");
         }
 
         private static async Task ProcessFile(string fileName)
@@ -107,9 +133,11 @@ namespace Import_Service
             List<byte[]> Chunks = new();
             const int batchSize = 5000;
 
-            const int BufferSize = 128 * 1024; // 128KB por leitura
+            const int BufferSize = 8 * 1024; // 8KB por leitura
             byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
 
+            var sw = new Stopwatch();
+            sw.Start();
             HttpResponseMessage response;
             while (true)
             {
@@ -134,14 +162,14 @@ namespace Import_Service
 
             fileName = Regex.Replace(fileName, @"[0-9]", "");
             var thisHeaderCollection = headers[fileName];
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 5; i++)
             {
                 processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             }
 
             var opts = new InsertManyOptions { IsOrdered = false };
             var collection = mongoDatabase.GetCollection<BsonDocument>(fileName);
-            for (int i = 0; i < 2; i++)
+            for (int i = 0; i < 3; i++)
             {
                 importers.Add(Importer(DataProcess.Reader));
             }
@@ -151,8 +179,8 @@ namespace Import_Service
             await Task.WhenAll(processors);
             DataProcess.Writer.Complete();
             await Task.WhenAll(importers);
-
-            Console.WriteLine($"Arquivo {fileName} Importado com Sucesso!");
+            sw.Stop();
+            Console.WriteLine($"Arquivo {fileName} Importado com Sucesso em {sw.Elapsed.Hours}h {sw.Elapsed.Minutes}m {sw.Elapsed.Seconds}s {sw.Elapsed.Milliseconds}ms!");
 
             async Task Downloader(ChannelWriter<byte[]> writer)
             /* [Downloader]
