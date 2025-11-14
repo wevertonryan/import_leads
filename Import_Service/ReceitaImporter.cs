@@ -119,7 +119,7 @@ namespace Import_Service
             var file = baseUrl + fileName + ".zip";
             var channelOptions = new BoundedChannelOptions(150) { FullMode = BoundedChannelFullMode.Wait }; //quando encher, começar a escrever no disco para não atrapalhar o download, ou alguma outra etapa
 
-            var DataDownload = Channel.CreateBounded<byte[]>(channelOptions);
+            var DataDownload = Channel.CreateBounded<ReadOnlyMemory<byte>>(channelOptions);
             var DataProcess = Channel.CreateBounded<BsonDocument>(channelOptions);
 
             ICollection<Task> downloaders = new List<Task>();
@@ -152,7 +152,7 @@ namespace Import_Service
             {
                 var localRaw = Channel.CreateBounded<byte[]>(channelOptions);
                 _ = Downloader(localRaw.Writer);
-                downloaders.Add(BrokenLineRepairer(localRaw.Reader, DataDownload.Writer));
+                downloaders.Add(LineSplitter(localRaw.Reader, DataDownload.Writer));
             }
 
             fileName = Regex.Replace(fileName, @"[0-9]", "");
@@ -213,7 +213,7 @@ namespace Import_Service
 
             // A segunda ideia seria tira a cabeça e o rabo (tail), e ir juntando eles em uma nova Chunk, quando alcançasse o tamanho do BufferSize, mandaria como uma nova Chunk
             // fazer um segundo teste com a primeira ideia
-            async Task BrokenLineRepairer(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
+            /*async Task LineSplitter(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
             {
                 using var brokenLineBuffer = new MemoryStream();
                 using var connectedLinesBuffer = new MemoryStream(BufferSize);
@@ -280,9 +280,55 @@ namespace Import_Service
                     connectedLinesBuffer.Position = 0;
                     connectedLinesBuffer.SetLength(0);
                 }
+            }*/
+
+            async Task LineSplitter(ChannelReader<byte[]> reader, ChannelWriter<ReadOnlyMemory<byte>> writer)
+            {
+                using var tail = new MemoryStream();
+
+                await foreach (var chunk in reader.ReadAllAsync())
+                {
+                    ReadOnlySpan<byte> span = chunk;
+
+                    int newlinePos;
+                    int offset = 0;
+
+                    // Scan for newlines
+                    while ((newlinePos = span.Slice(offset).IndexOf((byte)'\n')) >= 0)
+                    {
+                        int absolute = offset + newlinePos + 1;
+                        int len = absolute;
+
+                        if (tail.Length > 0)
+                        {
+                            // Combine tail + head to form full line
+                            tail.Write(span.Slice(0, absolute - offset));
+                            writer.TryWrite(tail.ToArray());
+                            tail.SetLength(0);
+                        }
+                        else
+                        {
+                            // Full line is already inside this chunk
+                            writer.TryWrite(chunk.AsMemory(0, absolute));
+                        }
+
+                        span = span.Slice(absolute);
+                        offset = 0;
+                    }
+
+                    // tail: leftover (unfinished line)
+                    if (span.Length > 0)
+                        tail.Write(span);
+
+                    ArrayPool<byte>.Shared.Return(chunk);
+                }
+
+                // flush leftover final line
+                if (tail.Length > 0)
+                    writer.TryWrite(tail.ToArray());
             }
 
-            async Task Processor(ChannelReader<byte[]> reader, ChannelWriter<BsonDocument> writer)
+            //async Task Processor(ChannelReader<byte[]> reader, ChannelWriter<BsonDocument> writer)
             /* [Processor]
             - Consumidor do Canal DataDownload e Produtor do Canal DataProcess
             - Irá realizar o processamento dos blocos fornecidos pelo Downloader
@@ -290,7 +336,7 @@ namespace Import_Service
             - E criação do BsonDocument
             - E a subtituição das aspas para vazio
             - Provavel de ter mais de 1 para esse processo por arquivo*/
-            {
+            /*{
                 await foreach (var chunk in reader.ReadAllAsync())
                 {
                     //Chunks.Add(chunk);
@@ -326,6 +372,47 @@ namespace Import_Service
                     }
                     ArrayPool<byte>.Shared.Return(chunk);
                 }
+            }*/
+
+            async Task Processor(ChannelReader<ReadOnlyMemory<byte>> reader,
+                     ChannelWriter<BsonDocument> writer)
+            {
+                await foreach (var mem in reader.ReadAllAsync())
+                {
+                    ReadOnlySpan<byte> line = mem.Span;
+
+                    if (line.Length == 0)
+                        continue;
+
+                    BsonDocument doc = ParseCsvLine(line);
+                    await writer.WriteAsync(doc);
+                }
+
+                writer.Complete();
+            }
+
+
+            BsonDocument ParseCsvLine(ReadOnlySpan<byte> line)
+            {
+                var doc = new BsonDocument();
+
+                int start = 0;
+                int headerIdx = 0;
+
+                for (int i = 0; i <= line.Length; i++)
+                {
+                    if (i == line.Length || line[i] == (byte)';' || line[i] == (byte)'\n')
+                    {
+                        ReadOnlySpan<byte> fieldSpan = line.Slice(start, i - start);
+
+                        string field = Latin1Encoding.GetString(fieldSpan);
+
+                        doc[thisHeaderCollection[headerIdx++]] = field;
+                        start = i + 1;
+                    }
+                }
+
+                return doc;
             }
 
             async Task Importer(ChannelReader<BsonDocument> reader)

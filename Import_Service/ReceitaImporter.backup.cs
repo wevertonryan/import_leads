@@ -196,4 +196,90 @@ namespace Import_Service
         }
     }
 }
+
+
+
+
+código feito por IA, tá ruim mas tem alguns conceitos interressantes
+async Task BrokenLineRepairer(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
+{
+    const int MaxBufferSize = 1024 * 1024; // 1MB
+    const int MaxLinesPerChunk = 1000; // Limite para enviar juntos
+
+    byte[] buffer = ArrayPool<byte>.Shared.Rent(MaxBufferSize);
+    int bufferIndex = 0;
+    int linesInBuffer = 0;
+
+    await foreach (var chunk in reader.ReadAllAsync())
+    {
+        try
+        {
+            int start = 0;
+            for (int i = 0; i < chunk.Length; i++)
+            {
+                if (chunk[i] == (byte)'\n')
+                {
+                    int lineLength = i - start + 1;
+                    if (bufferIndex + lineLength > buffer.Length)
+                    {
+                        Console.WriteLine("Linha muito longa, descartando.");
+                        bufferIndex = 0;
+                        linesInBuffer = 0;
+                        start = i + 1;
+                        continue;
+                    }
+
+                    chunk.AsSpan(start, lineLength).CopyTo(buffer.AsSpan(bufferIndex));
+                    bufferIndex += lineLength;
+                    linesInBuffer++;
+
+                    // Se atingiu o limite de linhas, envia o pedaço
+                    if (linesInBuffer >= MaxLinesPerChunk)
+                    {
+                        var partialChunk = new byte[bufferIndex];
+                        buffer.AsSpan(0, bufferIndex).CopyTo(partialChunk);
+                        await writer.WriteAsync(partialChunk);
+
+                        bufferIndex = 0;
+                        linesInBuffer = 0;
+                    }
+
+                    start = i + 1;
+                }
+            }
+
+            // Copia o restante do chunk
+            int remainingLength = chunk.Length - start;
+            if (remainingLength > 0)
+            {
+                if (bufferIndex + remainingLength > buffer.Length)
+                {
+                    Console.WriteLine("Buffer cheio, descartando.");
+                    bufferIndex = 0;
+                    linesInBuffer = 0;
+                }
+                else
+                {
+                    chunk.AsSpan(start, remainingLength).CopyTo(buffer.AsSpan(bufferIndex));
+                    bufferIndex += remainingLength;
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(chunk);
+        }
+    }
+
+    // Envia o que sobrou no buffer (última parte incompleta ou completa)
+    if (bufferIndex > 0)
+    {
+        var finalChunk = new byte[bufferIndex];
+        buffer.AsSpan(0, bufferIndex).CopyTo(finalChunk);
+        await writer.WriteAsync(finalChunk);
+    }
+
+    writer.Complete();
+    ArrayPool<byte>.Shared.Return(buffer);
+}
 */
