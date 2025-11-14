@@ -31,7 +31,7 @@ namespace Import_Service
             ["DatabaseName"] = "LeadSearch",
             ["ConnectionString"] = "mongodb://localhost:27017"
         };
-        private static readonly SemaphoreSlim downloadSemaphore = new(3);
+        private static readonly SemaphoreSlim downloadSemaphore = new(1);
         private static readonly string[] filesArray = ["Cnaes", /*"Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8","Empresas9","Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8","Estabelecimentos9", */"Motivos","Municipios","Naturezas","Paises","Qualificacoes","Simples",/*"Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7","Socios8",*/"Socios9"];
         //Conexão com o MongoDB
         private static readonly IMongoDatabase mongoDatabase = new MongoClient(ConnectionDatabaseConfig["ConnectionString"]).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
@@ -119,7 +119,7 @@ namespace Import_Service
             var file = baseUrl + fileName + ".zip";
             var channelOptions = new BoundedChannelOptions(150) { FullMode = BoundedChannelFullMode.Wait }; //quando encher, começar a escrever no disco para não atrapalhar o download, ou alguma outra etapa
 
-            var DataDownload = Channel.CreateBounded<ReadOnlyMemory<byte>>(channelOptions);
+            var DataDownload = Channel.CreateBounded<byte[]>(channelOptions);
             var DataProcess = Channel.CreateBounded<BsonDocument>(channelOptions);
 
             ICollection<Task> downloaders = new List<Task>();
@@ -128,8 +128,7 @@ namespace Import_Service
             List<byte[]> Chunks = new();
             const int batchSize = 5000;
 
-            const int BufferSize = 8 * 1024; // 8KB por leitura
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+            const int BufferSize = 1 * 1024; // 8KB por leitura
 
             var sw = new Stopwatch();
             sw.Start();
@@ -150,21 +149,19 @@ namespace Import_Service
             
             for (int i = 0; i < 1; i++)
             {
-                var localRaw = Channel.CreateBounded<byte[]>(channelOptions);
-                _ = Downloader(localRaw.Writer);
-                downloaders.Add(LineSplitter(localRaw.Reader, DataDownload.Writer));
+                downloaders.Add(Downloader(DataDownload.Writer));
             }
 
             fileName = Regex.Replace(fileName, @"[0-9]", "");
             var thisHeaderCollection = headers[fileName];
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < 1; i++)
             {
                 processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             }
 
             var opts = new InsertManyOptions { IsOrdered = false };
             var collection = mongoDatabase.GetCollection<BsonDocument>(fileName);
-            for (int i = 0; i < 2; i++)
+            for (int i = 0; i < 1; i++)
             {
                 importers.Add(Importer(DataProcess.Reader));
             }
@@ -185,6 +182,8 @@ namespace Import_Service
             - Terá provavelmente apenas 1, para baixar o arquivo inteiro, ou mais para realizar o download em partes 
             (só terá mais se tiver mais recurso disponivel mesmo baixando 3 arquivos simultaneamente)*/
             {
+                byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+
                 await using var zipStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
                 using var zipInputStream = new ZipInputStream(zipStream);
                 zipInputStream.IsStreamOwner = false;
@@ -196,19 +195,28 @@ namespace Import_Service
                     Console.WriteLine($"Lendo: {entry.Name}");
 
                     int bytesRead;
-                    while ((bytesRead = await zipInputStream.ReadAsync(buffer, 0, BufferSize)) > 0)
+                    int totalChunk = 0;
+                    int remaning = 0;
+                    while ((bytesRead = await zipInputStream.ReadAsync(buffer, remaning, BufferSize - remaning)) > 0)
                     {
+                        Console.WriteLine("Buffer: ");
+                        Console.WriteLine(Encoding.Latin1.GetString(buffer));
+                        totalChunk = buffer.AsSpan().LastIndexOf((byte)'\n') + 1; //quantidade, mas tbm significa o inicio da ultima linha
                         // Copia apenas os dados lidos em um novo buffer
-                        byte[] chunk = ArrayPool<byte>.Shared.Rent(bytesRead);
-                        chunk.AsSpan().Clear();
-                        buffer.AsSpan(0, bytesRead).CopyTo(chunk);
-
+                        byte[] chunk = ArrayPool<byte>.Shared.Rent(totalChunk); //pega um array com a quantidade do totalChunk
+                        chunk.AsSpan(totalChunk).Clear(); //limpa o restante que veio do array pool
+                        buffer.AsSpan(0, totalChunk).CopyTo(chunk); //transforma o buffer em uma view do 0 até o ultimo \n, já que aqui é o count, e não indice, e manda para chunk
                         // Envia para o canal
+
+                        Console.WriteLine("Chunk: ");
+                        Console.WriteLine(Encoding.Latin1.GetString(chunk));
                         await writer.WriteAsync(chunk);
+                        remaning = bytesRead - totalChunk;
+                        buffer.AsSpan(totalChunk, remaning).CopyTo(buffer);
+                        buffer.AsSpan(remaning + 1).Clear();
                     }
                     ArrayPool<byte>.Shared.Return(buffer);
                 }
-                writer.Complete();
             }
 
             // A segunda ideia seria tira a cabeça e o rabo (tail), e ir juntando eles em uma nova Chunk, quando alcançasse o tamanho do BufferSize, mandaria como uma nova Chunk
@@ -291,18 +299,16 @@ namespace Import_Service
                     ReadOnlySpan<byte> span = chunk;
 
                     int newlinePos;
-                    int offset = 0;
 
                     // Scan for newlines
-                    while ((newlinePos = span.Slice(offset).IndexOf((byte)'\n')) >= 0)
+                    while ((newlinePos = span.IndexOf((byte)'\n')) >= 0)
                     {
-                        int absolute = offset + newlinePos + 1;
-                        int len = absolute;
+                        int absolute = newlinePos + 1;
 
                         if (tail.Length > 0)
                         {
                             // Combine tail + head to form full line
-                            tail.Write(span.Slice(0, absolute - offset));
+                            tail.Write(span.Slice(0, absolute));
                             writer.TryWrite(tail.ToArray());
                             tail.SetLength(0);
                         }
@@ -313,7 +319,6 @@ namespace Import_Service
                         }
 
                         span = span.Slice(absolute);
-                        offset = 0;
                     }
 
                     // tail: leftover (unfinished line)
@@ -374,12 +379,12 @@ namespace Import_Service
                 }
             }*/
 
-            async Task Processor(ChannelReader<ReadOnlyMemory<byte>> reader,
+            async Task Processor(ChannelReader<byte[]> reader,
                      ChannelWriter<BsonDocument> writer)
             {
                 await foreach (var mem in reader.ReadAllAsync())
                 {
-                    ReadOnlySpan<byte> line = mem.Span;
+                    ReadOnlySpan<byte> line = mem;
 
                     if (line.Length == 0)
                         continue;
