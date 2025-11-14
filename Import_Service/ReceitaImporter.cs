@@ -3,6 +3,7 @@ using MongoDB.Bson;
 using MongoDB.Driver;
 using MongoDB.Driver.Core.Configuration;
 using SharpCompress.Common;
+using SharpCompress.Writers;
 using System;
 using System.Buffers;
 using System.Diagnostics;
@@ -31,8 +32,8 @@ namespace Import_Service
             ["DatabaseName"] = "LeadSearch",
             ["ConnectionString"] = "mongodb://localhost:27017"
         };
-        private static readonly SemaphoreSlim downloadSemaphore = new(1);
-        private static readonly string[] filesArray = ["Cnaes", /*"Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8","Empresas9","Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8","Estabelecimentos9", */"Motivos","Municipios","Naturezas","Paises","Qualificacoes","Simples",/*"Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7","Socios8",*/"Socios9"];
+        private static readonly SemaphoreSlim downloadSemaphore = new(3);
+        private static readonly string[] filesArray = [/*"Cnaes", "Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8", "Empresas9","Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8","Estabelecimentos9", "Motivos","Municipios","Naturezas","Paises", "Qualificacoes","Simples",*/"Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7", "Socios8", "Socios9"];
         //Conexão com o MongoDB
         private static readonly IMongoDatabase mongoDatabase = new MongoClient(ConnectionDatabaseConfig["ConnectionString"]).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
         private static readonly HttpClient httpClient = new(new HttpClientHandler
@@ -117,7 +118,7 @@ namespace Import_Service
         - Adicionar/Retirar trabalhadores com base na necessidade, se quem estiver causando o gargalo for o banco adicionar mais no banco*/
         {
             var file = baseUrl + fileName + ".zip";
-            var channelOptions = new BoundedChannelOptions(150) { FullMode = BoundedChannelFullMode.Wait }; //quando encher, começar a escrever no disco para não atrapalhar o download, ou alguma outra etapa
+            var channelOptions = new BoundedChannelOptions(50000) { FullMode = BoundedChannelFullMode.Wait }; //quando encher, começar a escrever no disco para não atrapalhar o download, ou alguma outra etapa
 
             var DataDownload = Channel.CreateBounded<byte[]>(channelOptions);
             var DataProcess = Channel.CreateBounded<BsonDocument>(channelOptions);
@@ -128,7 +129,7 @@ namespace Import_Service
             List<byte[]> Chunks = new();
             const int batchSize = 5000;
 
-            const int BufferSize = 1 * 1024; // 8KB por leitura
+            const int BufferSize = 8 * 1024; // 8KB por leitura
 
             var sw = new Stopwatch();
             sw.Start();
@@ -154,14 +155,14 @@ namespace Import_Service
 
             fileName = Regex.Replace(fileName, @"[0-9]", "");
             var thisHeaderCollection = headers[fileName];
-            for (int i = 0; i < 1; i++)
+            for (int i = 0; i < 3; i++)
             {
                 processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
             }
 
             var opts = new InsertManyOptions { IsOrdered = false };
             var collection = mongoDatabase.GetCollection<BsonDocument>(fileName);
-            for (int i = 0; i < 1; i++)
+            for (int i = 0; i < 2; i++)
             {
                 importers.Add(Importer(DataProcess.Reader));
             }
@@ -195,23 +196,18 @@ namespace Import_Service
                     Console.WriteLine($"Lendo: {entry.Name}");
 
                     int bytesRead;
-                    int totalChunk = 0;
+                    int totalChunk;
                     int remaning = 0;
                     while ((bytesRead = await zipInputStream.ReadAsync(buffer, remaning, BufferSize - remaning)) > 0)
                     {
-                        Console.WriteLine("Buffer: ");
-                        Console.WriteLine(Encoding.Latin1.GetString(buffer));
                         totalChunk = buffer.AsSpan().LastIndexOf((byte)'\n') + 1; //quantidade, mas tbm significa o inicio da ultima linha
                         // Copia apenas os dados lidos em um novo buffer
                         byte[] chunk = ArrayPool<byte>.Shared.Rent(totalChunk); //pega um array com a quantidade do totalChunk
                         chunk.AsSpan(totalChunk).Clear(); //limpa o restante que veio do array pool
                         buffer.AsSpan(0, totalChunk).CopyTo(chunk); //transforma o buffer em uma view do 0 até o ultimo \n, já que aqui é o count, e não indice, e manda para chunk
                         // Envia para o canal
-
-                        Console.WriteLine("Chunk: ");
-                        Console.WriteLine(Encoding.Latin1.GetString(chunk));
                         await writer.WriteAsync(chunk);
-                        remaning = bytesRead - totalChunk;
+                        remaning = buffer.Length - totalChunk;
                         buffer.AsSpan(totalChunk, remaning).CopyTo(buffer);
                         buffer.AsSpan(remaning + 1).Clear();
                     }
@@ -219,184 +215,26 @@ namespace Import_Service
                 }
             }
 
-            // A segunda ideia seria tira a cabeça e o rabo (tail), e ir juntando eles em uma nova Chunk, quando alcançasse o tamanho do BufferSize, mandaria como uma nova Chunk
-            // fazer um segundo teste com a primeira ideia
-            /*async Task LineSplitter(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
-            {
-                using var brokenLineBuffer = new MemoryStream();
-                using var connectedLinesBuffer = new MemoryStream(BufferSize);
-                await foreach (var chunk in reader.ReadAllAsync())
-                {
-                    // Tive duas ideias para solucionar o problema (De alocação de memoria desnecessária), e tem mais a do GPT
-                    // A primeira e ter dois bytes, um maior para levar a chunk toda, e uma para o Tail, e mandaria as duas juntas, que seria tratada pelo Processor
-                    //Console.WriteLine(Encoding.Latin1.GetString(chunk));
-                    int endFirstLineIndex = Array.IndexOf(chunk, (byte)'\n');
-                    int endChunkIndex = Array.LastIndexOf(chunk, (byte)'\n');
-                    int completeLength = endChunkIndex - endFirstLineIndex;
-
-                    if (endFirstLineIndex == -1 || endChunkIndex == -1 || endChunkIndex <= endFirstLineIndex) {
-                        Console.WriteLine("Chunk Line Error");
-                        continue;
-                    }
-                    byte[] safeChunk = ArrayPool<byte>.Shared.Rent(completeLength);
-                    //Solução Temporária
-                    safeChunk.AsSpan().Clear();
-                    //Console.WriteLine("Tamanho Completo: " + completeLength);
-                    //Console.WriteLine("Safe Chunk Antes: " + safeChunk.Length + "\n");
-
-                    chunk.AsSpan(endFirstLineIndex + 1, completeLength).CopyTo(safeChunk);
-                    await writer.WriteAsync(safeChunk);
-
-                    //Console.WriteLine("Chunk normal: " + Encoding.Latin1.GetString(chunk));
-                    //Console.WriteLine("Safe Chunk: " + Encoding.Latin1.GetString(safeChunk) + "\n");
-
-                    
-                    //posso deixar write async para maior eficiencia, mas vou ter que modificar algumas coisas
-                    int firstLineSize = endFirstLineIndex + 1;
-                    int lastLineSize = chunk.Length - (endChunkIndex + 1);
-                    brokenLineBuffer.Write(chunk, 0, firstLineSize);
-                    if (BufferSize < (int)connectedLinesBuffer.Length + (int)brokenLineBuffer.Length)
-                    {
-                        var connectedLineChunk = ArrayPool<byte>.Shared.Rent((int)connectedLinesBuffer.Length);
-                        connectedLineChunk.AsSpan().Clear();
-                        connectedLinesBuffer.ToArray().AsSpan(0, (int)connectedLinesBuffer.Length).CopyTo(connectedLineChunk);
-                        await writer.WriteAsync(connectedLineChunk);
-                        //Console.WriteLine("Chunk BrokenLines: " + Encoding.Latin1.GetString(connectedLineChunk));
-                        connectedLinesBuffer.Position = 0;
-                        connectedLinesBuffer.SetLength(0);
-                    }
-                    if (brokenLineBuffer.ToArray()[^1] == (byte)'\n')
-                    {
-                        connectedLinesBuffer.Write(brokenLineBuffer.ToArray());
-                    }
-                    else
-                    {
-                        Console.WriteLine("Tem parada errada aqui");
-                    }
-                    brokenLineBuffer.Position = 0;
-                    brokenLineBuffer.Write(chunk, endChunkIndex + 1, lastLineSize);
-                    brokenLineBuffer.SetLength(lastLineSize);
-
-                    ArrayPool<byte>.Shared.Return(chunk);
-                }
-                if(connectedLinesBuffer.Length > 0){
-                    var connectedLineChunk = ArrayPool<byte>.Shared.Rent((int)connectedLinesBuffer.Length);
-                    connectedLineChunk.AsSpan().Clear();
-                    connectedLinesBuffer.ToArray().AsSpan(0, (int)connectedLinesBuffer.Length).CopyTo(connectedLineChunk);
-                    await writer.WriteAsync(connectedLineChunk);
-                    //Console.WriteLine("Chunk BrokenLines: " + Encoding.Latin1.GetString(connectedLineChunk));
-                    connectedLinesBuffer.Position = 0;
-                    connectedLinesBuffer.SetLength(0);
-                }
-            }*/
-
-            async Task LineSplitter(ChannelReader<byte[]> reader, ChannelWriter<ReadOnlyMemory<byte>> writer)
-            {
-                using var tail = new MemoryStream();
-
-                await foreach (var chunk in reader.ReadAllAsync())
-                {
-                    ReadOnlySpan<byte> span = chunk;
-
-                    int newlinePos;
-
-                    // Scan for newlines
-                    while ((newlinePos = span.IndexOf((byte)'\n')) >= 0)
-                    {
-                        int absolute = newlinePos + 1;
-
-                        if (tail.Length > 0)
-                        {
-                            // Combine tail + head to form full line
-                            tail.Write(span.Slice(0, absolute));
-                            writer.TryWrite(tail.ToArray());
-                            tail.SetLength(0);
-                        }
-                        else
-                        {
-                            // Full line is already inside this chunk
-                            writer.TryWrite(chunk.AsMemory(0, absolute));
-                        }
-
-                        span = span.Slice(absolute);
-                    }
-
-                    // tail: leftover (unfinished line)
-                    if (span.Length > 0)
-                        tail.Write(span);
-
-                    ArrayPool<byte>.Shared.Return(chunk);
-                }
-
-                // flush leftover final line
-                if (tail.Length > 0)
-                    writer.TryWrite(tail.ToArray());
-            }
-
-            //async Task Processor(ChannelReader<byte[]> reader, ChannelWriter<BsonDocument> writer)
-            /* [Processor]
-            - Consumidor do Canal DataDownload e Produtor do Canal DataProcess
-            - Irá realizar o processamento dos blocos fornecidos pelo Downloader
-            - Será feita a descompactação (leitura do arquivo)
-            - E criação do BsonDocument
-            - E a subtituição das aspas para vazio
-            - Provavel de ter mais de 1 para esse processo por arquivo*/
-            /*{
-                await foreach (var chunk in reader.ReadAllAsync())
-                {
-                    //Chunks.Add(chunk);
-                    //Console.WriteLine(Encoding.Latin1.GetString(chunk));
-                    // devolve pro pool
-
-                    int start = 0;
-                    for (int i = 0; i < chunk.Length; i++)
-                    {
-                        if (chunk[i] == (byte)'\n')
-                        {
-                            int length = i - start + 1;
-                            string line = Latin1Encoding.GetString(chunk, start, length).Trim();
-                            var parts = line.Split(';');
-
-                            // Example transformation
-                            var doc = new BsonDocument();
-                            try
-                            {
-                                for (int j = 0; j < thisHeaderCollection.Length; j++)
-                                {
-                                    doc[thisHeaderCollection[j]] = parts[j].Trim('\"');
-                                }
-                                await writer.WriteAsync(doc);
-                            } catch (Exception ex)
-                            {
-                                Console.WriteLine($"Line: {line}");
-                                //Console.WriteLine("Chunk: " + Encoding.Latin1.GetString(chunk));
-                                //Console.WriteLine(ex.Message);
-                            }
-                            start = i + 1;
-                        }
-                    }
-                    ArrayPool<byte>.Shared.Return(chunk);
-                }
-            }*/
-
             async Task Processor(ChannelReader<byte[]> reader,
                      ChannelWriter<BsonDocument> writer)
             {
-                await foreach (var mem in reader.ReadAllAsync())
+                int fullLine;
+                await foreach (var chunk in reader.ReadAllAsync())
                 {
-                    ReadOnlySpan<byte> line = mem;
+                    ReadOnlyMemory<byte> chunkMemory = chunk;
+                    while ((fullLine = chunkMemory.Span.IndexOf((byte)'\n')) >= 0) {
+                        fullLine++;
+                        ReadOnlyMemory<byte> line = chunkMemory.Slice(0, fullLine);
+                        chunkMemory = chunkMemory.Slice(fullLine);
 
-                    if (line.Length == 0)
-                        continue;
+                        if (chunkMemory.IsEmpty) continue;
 
-                    BsonDocument doc = ParseCsvLine(line);
-                    await writer.WriteAsync(doc);
+                        BsonDocument doc = ParseCsvLine(line.Span);
+                        await writer.WriteAsync(doc);
+                    }
+                    ArrayPool<byte>.Shared.Return(chunk);
                 }
-
-                writer.Complete();
             }
-
-
             BsonDocument ParseCsvLine(ReadOnlySpan<byte> line)
             {
                 var doc = new BsonDocument();
@@ -404,11 +242,13 @@ namespace Import_Service
                 int start = 0;
                 int headerIdx = 0;
 
-                for (int i = 0; i <= line.Length; i++)
+                for (int i = 0; i < line.Length; i++)
                 {
-                    if (i == line.Length || line[i] == (byte)';' || line[i] == (byte)'\n')
+                    if (line[i] == (byte)';' || line[i] == (byte)'\n')
                     {
-                        ReadOnlySpan<byte> fieldSpan = line.Slice(start, i - start);
+                        if (line[i - 1] != (byte)'\"') //quando isso acontecer tem que transformar em array eu acho
+                            continue;
+                        ReadOnlySpan<byte> fieldSpan = line.Slice(start + 1, (i - start) - 2);
 
                         string field = Latin1Encoding.GetString(fieldSpan);
 
@@ -416,7 +256,6 @@ namespace Import_Service
                         start = i + 1;
                     }
                 }
-
                 return doc;
             }
 

@@ -282,4 +282,163 @@ async Task BrokenLineRepairer(ChannelReader<byte[]> reader, ChannelWriter<byte[]
     writer.Complete();
     ArrayPool<byte>.Shared.Return(buffer);
 }
-*/
+
+// A segunda ideia seria tira a cabeça e o rabo (tail), e ir juntando eles em uma nova Chunk, quando alcançasse o tamanho do BufferSize, mandaria como uma nova Chunk
+            // fazer um segundo teste com a primeira ideia
+            /*async Task LineSplitter(ChannelReader<byte[]> reader, ChannelWriter<byte[]> writer)
+            {
+                using var brokenLineBuffer = new MemoryStream();
+                using var connectedLinesBuffer = new MemoryStream(BufferSize);
+                await foreach (var chunk in reader.ReadAllAsync())
+                {
+                    // Tive duas ideias para solucionar o problema (De alocação de memoria desnecessária), e tem mais a do GPT
+                    // A primeira e ter dois bytes, um maior para levar a chunk toda, e uma para o Tail, e mandaria as duas juntas, que seria tratada pelo Processor
+                    //Console.WriteLine(Encoding.Latin1.GetString(chunk));
+                    int endFirstLineIndex = Array.IndexOf(chunk, (byte)'\n');
+                    int endChunkIndex = Array.LastIndexOf(chunk, (byte)'\n');
+                    int completeLength = endChunkIndex - endFirstLineIndex;
+
+                    if (endFirstLineIndex == -1 || endChunkIndex == -1 || endChunkIndex <= endFirstLineIndex) {
+                        Console.WriteLine("Chunk Line Error");
+                        continue;
+                    }
+                    byte[] safeChunk = ArrayPool<byte>.Shared.Rent(completeLength);
+                    //Solução Temporária
+                    safeChunk.AsSpan().Clear();
+                    //Console.WriteLine("Tamanho Completo: " + completeLength);
+                    //Console.WriteLine("Safe Chunk Antes: " + safeChunk.Length + "\n");
+
+                    chunk.AsSpan(endFirstLineIndex + 1, completeLength).CopyTo(safeChunk);
+                    await writer.WriteAsync(safeChunk);
+
+                    //Console.WriteLine("Chunk normal: " + Encoding.Latin1.GetString(chunk));
+                    //Console.WriteLine("Safe Chunk: " + Encoding.Latin1.GetString(safeChunk) + "\n");
+
+                    
+                    //posso deixar write async para maior eficiencia, mas vou ter que modificar algumas coisas
+                    int firstLineSize = endFirstLineIndex + 1;
+                    int lastLineSize = chunk.Length - (endChunkIndex + 1);
+                    brokenLineBuffer.Write(chunk, 0, firstLineSize);
+                    if (BufferSize < (int)connectedLinesBuffer.Length + (int)brokenLineBuffer.Length)
+                    {
+                        var connectedLineChunk = ArrayPool<byte>.Shared.Rent((int)connectedLinesBuffer.Length);
+                        connectedLineChunk.AsSpan().Clear();
+                        connectedLinesBuffer.ToArray().AsSpan(0, (int)connectedLinesBuffer.Length).CopyTo(connectedLineChunk);
+                        await writer.WriteAsync(connectedLineChunk);
+                        //Console.WriteLine("Chunk BrokenLines: " + Encoding.Latin1.GetString(connectedLineChunk));
+                        connectedLinesBuffer.Position = 0;
+                        connectedLinesBuffer.SetLength(0);
+                    }
+                    if (brokenLineBuffer.ToArray()[^1] == (byte)'\n')
+                    {
+                        connectedLinesBuffer.Write(brokenLineBuffer.ToArray());
+                    }
+                    else
+                    {
+                        Console.WriteLine("Tem parada errada aqui");
+                    }
+                    brokenLineBuffer.Position = 0;
+                    brokenLineBuffer.Write(chunk, endChunkIndex + 1, lastLineSize);
+                    brokenLineBuffer.SetLength(lastLineSize);
+
+                    ArrayPool<byte>.Shared.Return(chunk);
+                }
+                if(connectedLinesBuffer.Length > 0){
+                    var connectedLineChunk = ArrayPool<byte>.Shared.Rent((int)connectedLinesBuffer.Length);
+                    connectedLineChunk.AsSpan().Clear();
+                    connectedLinesBuffer.ToArray().AsSpan(0, (int)connectedLinesBuffer.Length).CopyTo(connectedLineChunk);
+                    await writer.WriteAsync(connectedLineChunk);
+                    //Console.WriteLine("Chunk BrokenLines: " + Encoding.Latin1.GetString(connectedLineChunk));
+                    connectedLinesBuffer.Position = 0;
+                    connectedLinesBuffer.SetLength(0);
+                }
+            }*/
+
+/*async Task LineSplitter(ChannelReader<byte[]> reader, ChannelWriter<ReadOnlyMemory<byte>> writer)
+{
+    using var tail = new MemoryStream();
+
+    await foreach (var chunk in reader.ReadAllAsync())
+    {
+        ReadOnlySpan<byte> span = chunk;
+
+        int newlinePos;
+
+        // Scan for newlines
+        while ((newlinePos = span.IndexOf((byte)'\n')) >= 0)
+        {
+            int absolute = newlinePos + 1;
+
+            if (tail.Length > 0)
+            {
+                // Combine tail + head to form full line
+                tail.Write(span.Slice(0, absolute));
+                writer.TryWrite(tail.ToArray());
+                tail.SetLength(0);
+            }
+            else
+            {
+                // Full line is already inside this chunk
+                writer.TryWrite(chunk.AsMemory(0, absolute));
+            }
+
+            span = span.Slice(absolute);
+        }
+
+        // tail: leftover (unfinished line)
+        if (span.Length > 0)
+            tail.Write(span);
+
+        ArrayPool<byte>.Shared.Return(chunk);
+    }
+
+    // flush leftover final line
+    if (tail.Length > 0)
+        writer.TryWrite(tail.ToArray());
+}*/
+
+//async Task Processor(ChannelReader<byte[]> reader, ChannelWriter<BsonDocument> writer)
+/* [Processor]
+- Consumidor do Canal DataDownload e Produtor do Canal DataProcess
+- Irá realizar o processamento dos blocos fornecidos pelo Downloader
+- Será feita a descompactação (leitura do arquivo)
+- E criação do BsonDocument
+- E a subtituição das aspas para vazio
+- Provavel de ter mais de 1 para esse processo por arquivo*/
+/*{
+    await foreach (var chunk in reader.ReadAllAsync())
+    {
+        //Chunks.Add(chunk);
+        //Console.WriteLine(Encoding.Latin1.GetString(chunk));
+        // devolve pro pool
+
+        int start = 0;
+        for (int i = 0; i < chunk.Length; i++)
+        {
+            if (chunk[i] == (byte)'\n')
+            {
+                int length = i - start + 1;
+                string line = Latin1Encoding.GetString(chunk, start, length).Trim();
+                var parts = line.Split(';');
+
+                // Example transformation
+                var doc = new BsonDocument();
+                try
+                {
+                    for (int j = 0; j < thisHeaderCollection.Length; j++)
+                    {
+                        doc[thisHeaderCollection[j]] = parts[j].Trim('\"');
+                    }
+                    await writer.WriteAsync(doc);
+                } catch (Exception ex)
+                {
+                    Console.WriteLine($"Line: {line}");
+                    //Console.WriteLine("Chunk: " + Encoding.Latin1.GetString(chunk));
+                    //Console.WriteLine(ex.Message);
+                }
+                start = i + 1;
+            }
+        }
+        ArrayPool<byte>.Shared.Return(chunk);
+    }
+}*/
