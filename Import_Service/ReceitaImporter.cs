@@ -33,7 +33,7 @@ namespace Import_Service
             ["ConnectionString"] = "mongodb://localhost:27017"
         };
         private static readonly SemaphoreSlim downloadSemaphore = new(3);
-        private static readonly string[] filesArray = [/*"Cnaes", "Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8", "Empresas9","Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8","Estabelecimentos9", "Motivos","Municipios","Naturezas","Paises", "Qualificacoes","Simples",*/"Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7", "Socios8", "Socios9"];
+        private static readonly string[] filesArray = ["Cnaes", "Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8", "Empresas9","Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8","Estabelecimentos9", "Motivos", "Municipios","Naturezas","Paises", "Qualificacoes","Simples","Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7", "Socios8", "Socios9"];
         //Conexão com o MongoDB
         private static readonly IMongoDatabase mongoDatabase = new MongoClient(ConnectionDatabaseConfig["ConnectionString"]).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
         private static readonly HttpClient httpClient = new(new HttpClientHandler
@@ -117,8 +117,11 @@ namespace Import_Service
         - Fará o Controle dinámico dos produtores e consumidores com base nos recursos disponiveis durante a execução (adição ou retiragem)
         - Adicionar/Retirar trabalhadores com base na necessidade, se quem estiver causando o gargalo for o banco adicionar mais no banco*/
         {
+            List<string> ErrorLines = new List<string>();
             var file = baseUrl + fileName + ".zip";
             var channelOptions = new BoundedChannelOptions(50000) { FullMode = BoundedChannelFullMode.Wait }; //quando encher, começar a escrever no disco para não atrapalhar o download, ou alguma outra etapa
+            fileName = Regex.Replace(fileName, @"[0-9]", "");
+            var thisHeaderCollection = headers[fileName];
 
             var DataDownload = Channel.CreateBounded<byte[]>(channelOptions);
             var DataProcess = Channel.CreateBounded<BsonDocument>(channelOptions);
@@ -152,9 +155,6 @@ namespace Import_Service
             {
                 downloaders.Add(Downloader(DataDownload.Writer));
             }
-
-            fileName = Regex.Replace(fileName, @"[0-9]", "");
-            var thisHeaderCollection = headers[fileName];
             for (int i = 0; i < 3; i++)
             {
                 processors.Add(Processor(DataDownload.Reader, DataProcess.Writer));
@@ -162,7 +162,7 @@ namespace Import_Service
 
             var opts = new InsertManyOptions { IsOrdered = false };
             var collection = mongoDatabase.GetCollection<BsonDocument>(fileName);
-            for (int i = 0; i < 2; i++)
+            for (int i = 0; i < 1; i++)
             {
                 importers.Add(Importer(DataProcess.Reader));
             }
@@ -173,6 +173,18 @@ namespace Import_Service
             await Task.WhenAll(importers);
             sw.Stop();
             Console.WriteLine($"Arquivo {fileName} Importado com Sucesso em {sw.Elapsed.Hours}h {sw.Elapsed.Minutes}m {sw.Elapsed.Seconds}s {sw.Elapsed.Milliseconds}ms!");
+
+            if (ErrorLines.Count() > 0)
+            {
+                var path = AppDomain.CurrentDomain.BaseDirectory + @"ReiceitaImporterLog\";
+                Directory.CreateDirectory(path);
+                path += $"ErrorLines{fileName}.txt";
+                foreach (string content in ErrorLines)
+                {
+                    File.AppendAllText(path, $"{content}\n");
+                }
+                Console.WriteLine($"Arquivo ErrorLines{fileName}.txt criado/atualizado");
+            }
 
             async Task Downloader(ChannelWriter<byte[]> writer)
             /* [Downloader]
@@ -198,12 +210,16 @@ namespace Import_Service
                     int bytesRead;
                     int totalChunk;
                     int remaning = 0;
+
+                    // utilizar o PipeReader invés do ReadAsync (pesquisar mais sobre)
                     while ((bytesRead = await zipInputStream.ReadAsync(buffer, remaning, BufferSize - remaning)) > 0)
                     {
+                        buffer.AsSpan(remaning + bytesRead).Clear(); //tem que ver se está certo
                         totalChunk = buffer.AsSpan().LastIndexOf((byte)'\n') + 1; //quantidade, mas tbm significa o inicio da ultima linha
                         // Copia apenas os dados lidos em um novo buffer
                         byte[] chunk = ArrayPool<byte>.Shared.Rent(totalChunk); //pega um array com a quantidade do totalChunk
                         chunk.AsSpan(totalChunk).Clear(); //limpa o restante que veio do array pool
+                        
                         buffer.AsSpan(0, totalChunk).CopyTo(chunk); //transforma o buffer em uma view do 0 até o ultimo \n, já que aqui é o count, e não indice, e manda para chunk
                         // Envia para o canal
                         await writer.WriteAsync(chunk);
@@ -229,8 +245,13 @@ namespace Import_Service
 
                         if (chunkMemory.IsEmpty) continue;
 
-                        BsonDocument doc = ParseCsvLine(line.Span);
-                        await writer.WriteAsync(doc);
+                        try {
+                            BsonDocument doc = ParseCsvLine(line.Span);
+                            await writer.WriteAsync(doc);
+                        } catch(Exception ex)
+                        {
+                            ErrorLines.Add(ex.Message);
+                        }
                     }
                     ArrayPool<byte>.Shared.Return(chunk);
                 }
@@ -242,21 +263,29 @@ namespace Import_Service
                 int start = 0;
                 int headerIdx = 0;
 
-                for (int i = 0; i < line.Length; i++)
+                try
                 {
-                    if (line[i] == (byte)';' || line[i] == (byte)'\n')
+                    for (int i = 0; i < line.Length; i++)
                     {
-                        if (line[i - 1] != (byte)'\"') //quando isso acontecer tem que transformar em array eu acho
-                            continue;
-                        ReadOnlySpan<byte> fieldSpan = line.Slice(start + 1, (i - start) - 2);
-
-                        string field = Latin1Encoding.GetString(fieldSpan);
-
-                        doc[thisHeaderCollection[headerIdx++]] = field;
-                        start = i + 1;
+                        if (line[i] == (byte)';' && line[i - 1] == (byte)'\"' && line[i + 1] == (byte)'\"')
+                        {
+                            addFieldToDocument(line, start, i, headerIdx);
+                            start = i + 1;
+                            headerIdx++;
+                        }
                     }
+                    addFieldToDocument(line, start, line.Length - 1, headerIdx);
+                }
+                catch (Exception)
+                {
+                    throw new Exception(Latin1Encoding.GetString(line));
                 }
                 return doc;
+                void addFieldToDocument(ReadOnlySpan<byte> line, int start, int end, int headerIdx)
+                {
+                    ReadOnlySpan<byte> fieldSpan = line.Slice(start + 1, (end - start) - 2);
+                    doc[thisHeaderCollection[headerIdx]] = Latin1Encoding.GetString(fieldSpan);
+                }
             }
 
             async Task Importer(ChannelReader<BsonDocument> reader)
