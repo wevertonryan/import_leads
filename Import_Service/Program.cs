@@ -13,6 +13,7 @@ using System.Text.RegularExpressions;
 
 internal class Program
 {
+    private static readonly Encoding Latin1Encoding = Encoding.GetEncoding("ISO-8859-1");
     static DateOnly StringToDateOnly(ReadOnlySpan<byte> date)
     {
         static int Parse2(ReadOnlySpan<byte> s)
@@ -38,12 +39,13 @@ internal class Program
     static BsonArray CnaesArray(ReadOnlySpan<byte> cnaesArray)
     {
         var bsonCnaesArray = new BsonArray();
-        int start = 1;
+        int start = 0;
+        var line = Latin1Encoding.GetString(cnaesArray);
         try
         {
-            for (int i = 1; i < cnaesArray.Length - 1; i++)
+            for (int i = 0; i < cnaesArray.Length - 1; i++)
             {
-                if (cnaesArray[i] == (byte)',' && cnaesArray[i - 1] == (byte)'\"' && cnaesArray[i + 1] == (byte)'\"')
+                if (cnaesArray[i] == (byte)',')
                 {
                     addFieldToDocument(cnaesArray, start, i);
                     start = i + 1;
