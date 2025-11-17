@@ -33,7 +33,7 @@ namespace Import_Service
             ["ConnectionString"] = "mongodb://localhost:27017"
         };
         private static readonly SemaphoreSlim downloadSemaphore = new(3);
-        private static readonly string[] filesArray = ["Cnaes", "Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8", "Empresas9","Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8","Estabelecimentos9", "Motivos", "Municipios","Naturezas","Paises", "Qualificacoes","Simples","Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7", "Socios8", "Socios9"];
+        private static readonly string[] filesArray = [/*"Cnaes", "Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8", */"Empresas9",/*"Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8",*/"Estabelecimentos9"/*, "Motivos", "Municipios","Naturezas","Paises", "Qualificacoes","Simples","Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7", "Socios8", "Socios9"*/];
         //Conexão com o MongoDB
         private static readonly IMongoDatabase mongoDatabase = new MongoClient(ConnectionDatabaseConfig["ConnectionString"]).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
         private static readonly HttpClient httpClient = new(new HttpClientHandler
@@ -49,14 +49,14 @@ namespace Import_Service
         private static string baseUrl = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/2025-09/";
         private static readonly Dictionary<string, string[]> headers = new()
         {
-            ["Cnaes"] = ["codigo", "descricao"],
+            ["Cnaes"] = ["_id", "descricao"],
             ["Empresas"] = ["cnpjBase", "razaoSocial", "naturezaJuridica", "qualificacaoResponsavel", "capitalSocial", "porteEmpresa", "enteFederativo"],
             ["Estabelecimentos"] = ["cnpjBase", "cnpjOrdem", "cnpjDV", "matrizFilial", "nomeFantasia", "situacaoCadastral", "dataSituacaoCadastral", "motivoSituacaoCadastral", "cidadeExterior", "pais", "dataInicioAtividade", "cnaePrincipal", "cnaeSecundario", "tipoLogradouro", "logradouro", "numero", "complemento", "bairro", "CEP", "UF", "municipio", "ddd1", "telefone1", "ddd2", "telefone2", "dddFAX", "FAX", "correioEletronico", "situacaoEspecial", "dataSituacaoEspecial"],
-            ["Motivos"] = ["codigo", "descricao"],
-            ["Municipios"] = ["codigo", "descricao"],
-            ["Naturezas"] = ["codigo", "descricao"],
-            ["Paises"] = ["codigo", "descricao"],
-            ["Qualificacoes"] = ["codigo", "descricao"],
+            ["Motivos"] = ["_id", "descricao"],
+            ["Municipios"] = ["_id", "descricao"],
+            ["Naturezas"] = ["_id", "descricao"],
+            ["Paises"] = ["_id", "descricao"],
+            ["Qualificacoes"] = ["_id", "descricao"],
             ["Simples"] = ["cnpjBase", "opcaoDoSimples", "dataOpcaoDoSimples", "dataExclusaoDoSimples", "MEI", "dataOpcaoMEI", "dataExclusaoMei"],
             ["Socios"] = ["cnpjBase", "identificadoSocio", "nomeSocio", "cnpjCpf", "qualificaoSocio", "dataEntradaSociedade", "pais", "representanteLegal", "nomeRepresentante", "qualificacaoResponsavel", "faixaEtaria"]
         };
@@ -80,7 +80,7 @@ namespace Import_Service
             {
                 return;
             }*/
-            await DropAllCollectionsAsync();
+            //await DropAllCollectionsAsync();
             var processFiles = new List<Task>();
             var sw = new Stopwatch();
             sw.Start();
