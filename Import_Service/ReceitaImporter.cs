@@ -33,7 +33,7 @@ namespace Import_Service
             ["ConnectionString"] = "mongodb://localhost:27017"
         };
         private static readonly SemaphoreSlim downloadSemaphore = new(3);
-        private static readonly string[] filesArray = [/*"Cnaes", "Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8", */"Empresas9",/*"Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8",*/"Estabelecimentos9"/*, "Motivos", "Municipios","Naturezas","Paises", "Qualificacoes","Simples","Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7", "Socios8", "Socios9"*/];
+        private static readonly string[] filesArray = ["Cnaes",/* "Empresas0", "Empresas1", "Empresas2", "Empresas3", "Empresas4","Empresas5", "Empresas6", "Empresas7","Empresas8", */"Empresas9",/*"Estabelecimentos0","Estabelecimentos1","Estabelecimentos2","Estabelecimentos3","Estabelecimentos4","Estabelecimentos5","Estabelecimentos6","Estabelecimentos7","Estabelecimentos8",*/"Estabelecimentos9", "Motivos", "Municipios","Naturezas","Paises", "Qualificacoes","Simples",/*"Socios0","Socios1","Socios2","Socios3","Socios4","Socios5","Socios6","Socios7", "Socios8", */"Socios9"];
         //Conexão com o MongoDB
         private static readonly IMongoDatabase mongoDatabase = new MongoClient(ConnectionDatabaseConfig["ConnectionString"]).GetDatabase(ConnectionDatabaseConfig["DatabaseName"]);
         private static readonly HttpClient httpClient = new(new HttpClientHandler
@@ -58,7 +58,7 @@ namespace Import_Service
             ["Paises"] = ["_id", "descricao"],
             ["Qualificacoes"] = ["_id", "descricao"],
             ["Simples"] = ["cnpjBase", "opcaoDoSimples", "dataOpcaoDoSimples", "dataExclusaoDoSimples", "MEI", "dataOpcaoMEI", "dataExclusaoMei"],
-            ["Socios"] = ["cnpjBase", "identificadoSocio", "nomeSocio", "cnpjCpf", "qualificaoSocio", "dataEntradaSociedade", "pais", "representanteLegal", "nomeRepresentante", "qualificacaoResponsavel", "faixaEtaria"]
+            ["Socios"] = ["cnpjBase", "identificadorSocio", "nomeSocio", "cnpjCpf", "qualificaoSocio", "dataEntradaSociedade", "pais", "representanteLegal", "nomeRepresentante", "qualificacaoResponsavel", "faixaEtaria"]
         };
 
         /* CÓDIGO (Métodos Públicos)
@@ -80,7 +80,7 @@ namespace Import_Service
             {
                 return;
             }*/
-            //await DropAllCollectionsAsync();
+            await DropAllCollectionsAsync();
             var processFiles = new List<Task>();
             var sw = new Stopwatch();
             sw.Start();
@@ -284,7 +284,36 @@ namespace Import_Service
                 void addFieldToDocument(ReadOnlySpan<byte> line, int start, int end, int headerIdx)
                 {
                     ReadOnlySpan<byte> fieldSpan = line.Slice(start + 1, (end - start) - 2);
-                    doc[thisHeaderCollection[headerIdx]] = Latin1Encoding.GetString(fieldSpan);
+                    if (fieldSpan.IsEmpty)
+                    {
+                        doc[thisHeaderCollection[headerIdx]] = Latin1Encoding.GetString(fieldSpan);
+                        return;
+                    }
+                    try
+                    {
+                        switch (fileName)
+                        {
+                            case "Empresas":
+                                DatabaseFormater.Empresas(doc, fieldSpan, headerIdx);
+                                break;
+                            case "Estabelecimentos":
+                                DatabaseFormater.Estabelecimentos(doc, fieldSpan, headerIdx);
+                                break;
+                            case "Socios":
+                                DatabaseFormater.Socios(doc, fieldSpan, headerIdx);
+                                break;
+                            case "Simples":
+                                DatabaseFormater.Simples(doc, fieldSpan, headerIdx);
+                                break;
+                            default:
+                                doc[thisHeaderCollection[headerIdx]] = Latin1Encoding.GetString(fieldSpan);
+                                break;
+                        }
+                    } catch (Exception)
+                    {
+                        Console.WriteLine($"Deu Erro:\n- Linha: {Latin1Encoding.GetString(line)}\n- Campo: {Latin1Encoding.GetString(fieldSpan)}");
+                        doc[thisHeaderCollection[headerIdx]] = Latin1Encoding.GetString(fieldSpan);
+                    }
                 }
             }
 
